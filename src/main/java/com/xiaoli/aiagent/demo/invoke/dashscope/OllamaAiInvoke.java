@@ -11,7 +11,7 @@ import org.springframework.stereotype.Component;
  * Spring AI 框架调用 AI 大模型（Ollama）
  */
 // 取消注释后，项目启动时会执行
-@Component
+//@Component
 public class OllamaAiInvoke implements CommandLineRunner {
 
     @Resource

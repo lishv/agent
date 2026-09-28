@@ -66,14 +66,14 @@ class LoveAppTest {
         Assertions.assertNotNull(result);
         System.out.println("多模态模型返回结果：" + result);
     }
-//
-//    @Test
-//    void doChatWithRag() {
-//        String chatId = UUID.randomUUID().toString();
-//        String message = "我已经结婚了，但是婚后关系不太亲密，怎么办？";
-//        String answer = loveApp.doChatWithRag(message, chatId);
-//        Assertions.assertNotNull(answer);
-//    }
+
+    @Test
+    void doChatWithRag() {
+        String chatId = UUID.randomUUID().toString();
+        String message = "我已经结婚了，但是婚后感觉对方不像以前那么关心自己,怎么办？";
+        String answer = loveApp.doChatWithRag(message, chatId);
+        Assertions.assertNotNull(answer);
+    }
 
 //    @Test
 //    void doChatWithTools() {

@@ -19,7 +19,6 @@ target/
 *.iws
 *.iml
 *.ipr
-.tmp
 
 ### NetBeans ###
 /nbproject/private/
@@ -34,3 +33,5 @@ build/
 application-local.yml
 ### VS Code ###
 .vscode/
+
+.tmp/

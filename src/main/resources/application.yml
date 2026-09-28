@@ -7,7 +7,10 @@ server:
   port: 8124
   servlet:
     context-path: /api
-
+# 修改日志级别，查看 Spring AI 更多调用细节
+logging:
+  level:
+    org.springframework.ai: DEBUG
 
 
 

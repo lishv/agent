@@ -2,6 +2,8 @@ package com.xiaoli.aiagent.app;
 
 import com.xiaoli.aiagent.advisor.MyLoggerAdvisor;
 import com.xiaoli.aiagent.chatmemory.FileBasedChatMemoryRepository;
+import com.xiaoli.aiagent.rag.LoveAppRagCustomAdvisorFactory;
+import com.xiaoli.aiagent.rag.QueryRewriter;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
@@ -31,9 +33,13 @@ public class LoveApp {
 //    private ChatModel ollamaChatModel;
     @Resource
     private Advisor loveAppRagCloudAdvisor;
-
     @Resource
-    private VectorStore loveVectorStore;
+    private QueryRewriter queryRewriter;
+
+//    @Resource
+//    private VectorStore loveVectorStore;
+    @Resource(name = "pgVectorVectorStore")
+    private VectorStore pgVectorVectorStore;
 
     private ChatClient chatClient;
     private static final String SYSTEM_PROMPT = "你是深耕恋爱心理领域的专家。开场向用户表明身份，告知用户可倾诉恋爱难题。" +
@@ -171,28 +177,22 @@ public class LoveApp {
      * @return              AI 回复
      */
     public String doChatWithRag(String message, String chatId) {
-//        // 查询重写
-//        String rewrittenMessage = queryRewriter.doQueryRewrite(message);
+        // 查询重写
+        String rewrittenMessage = queryRewriter.doQueryRewrite(message);
         ChatResponse chatResponse = chatClient
                 .prompt()
                 // 使用改写后的查询
-                .user(message)
+                .user(rewrittenMessage)
                 .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, chatId))
                 // 开启日志，便于观察效果,默认开启过的
                 // 应用 RAG 知识库问答
-//                .advisors(QuestionAnswerAdvisor
-//                        .builder(loveVectorStore)
-//                        .build())
+//                .advisors(QuestionAnswerAdvisor.builder(loveVectorStore).build())
                 // 应用 RAG 检索增强服务（基于云知识库服务）
-                .advisors(loveAppRagCloudAdvisor)
+//                .advisors(loveAppRagCloudAdvisor)
                 // 应用 RAG 检索增强服务（基于 PgVector 向量存储）
-//                .advisors(new QuestionAnswerAdvisor(pgVectorVectorStore))
+                .advisors(QuestionAnswerAdvisor.builder(pgVectorVectorStore).build())
                 // 应用自定义的 RAG 检索增强服务（文档查询器 + 上下文增强器）
-//                .advisors(
-//                        LoveAppRagCustomAdvisorFactory.createLoveAppRagCustomAdvisor(
-//                                loveAppVectorStore, "单身"
-//                        )
-//                )
+//                .advisors(LoveAppRagCustomAdvisorFactory.createLoveAppRagCustomAdvisor(pgVectorVectorStore, "单身"))
                 .call()
                 .chatResponse();
         String content = chatResponse.getResult().getOutput().getText();

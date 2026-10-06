@@ -15,7 +15,7 @@ import java.util.List;
 /**
  * 恋爱大师向量数据库配置（初始化基于内存的向量数据库 Bean）
  */
-@Configuration
+//@Configuration
 public class LoveAppVectorStoreConfig {
 
     @Resource
@@ -24,23 +24,23 @@ public class LoveAppVectorStoreConfig {
     @Resource
     private MyTokenTextSplitter myTokenTextSplitter;
 
-//    @Resource
-//    private MyKeywordEnricher myKeywordEnricher;
+    @Resource
+    private MyKeywordEnricher myKeywordEnricher;
 
 
-    @Bean
+   @Bean
     VectorStore loveAppVectorStore(EmbeddingModel ollamaEmbeddingModel) {
         //EmbeddingModel dashscopeEmbeddingModel
         //  @Qualifier("ollamaEmbeddingModel") EmbeddingModel
-        // 初始化向量数据库
+        //创建基于内存的简易向量存储：数据存在 JVM 内存中，应用重启即丢失，适合开发/测试场景
         SimpleVectorStore simpleVectorStore = SimpleVectorStore.builder(ollamaEmbeddingModel).build();
         // 加载文档
         List<Document> documentList = loveAppDocumentLoader.loadMarkdowns();
-        // 自主切分文档
+        // 自主切分文档(不推荐,可以使用阿里云的分词服务)
 //        List<Document> splitDocuments = myTokenTextSplitter.splitCustomized(documentList);
         // 自动补充关键词元信息
-        //List<Document> enrichedDocuments = myKeywordEnricher.enrichDocuments(documentList);
-        simpleVectorStore.add(documentList);
+        List<Document> enrichedDocuments = myKeywordEnricher.enrichDocuments(documentList);
+        simpleVectorStore.add(enrichedDocuments);
         return simpleVectorStore;
     }
 }

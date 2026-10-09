@@ -3,6 +3,7 @@ spring:
     name: ai-agent
   profiles:
     active: local
+
   ai:
   vectorstore:
     pgvector:
@@ -10,6 +11,16 @@ spring:
     distance-type: COSINE_DISTANCE
     dimensions: 1024
     max-document-batch-size: 10000 # Optional: Maximum number of documents per batch
+# MCP 客户端配置
+    mcp:
+      client:
+        sse:
+          connections:
+            server1:
+              url: http://localhost:8127
+        stdio:
+          servers-configuration: classpath:mcp-servers.json
+
 server:
   port: 8124
   servlet:
@@ -42,3 +53,6 @@ knife4j:
   enable: true
   setting:
     language: zh_cn
+# 搜索API配置
+search-api:
+  api-key: nXunxe3B197Lnauu5nB9bNeG

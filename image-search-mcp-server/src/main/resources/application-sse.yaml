@@ -1,0 +1,8 @@
+spring:
+  ai:
+    mcp:
+      server:
+        name: image-search-mcp-server
+        version: 0.0.1
+        type: SYNC #同步
+        stdio: false # 关闭 Stdio 支持, 仅开启 SSE 支持

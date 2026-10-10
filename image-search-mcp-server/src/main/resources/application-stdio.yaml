@@ -1,0 +1,12 @@
+spring:
+  ai:
+    mcp:
+      server:
+        name: image-search-mcp-server
+        version: 0.0.1
+        type: SYNC #同步
+        stdio: true
+  # 关闭 banner, 避免在 Stdio 中打印 banner
+  main:
+    web-application-type: none
+    banner-mode: off

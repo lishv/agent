@@ -244,7 +244,7 @@ public class LoveApp {
                 .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, chatId))
                 // 开启日志，便于观察效果
                 .advisors(new MyLoggerAdvisor())
-                .toolCallbacks(toolCallbackProvider)
+                .toolCallbacks(toolCallbackProvider)//包含地图和图片搜索mcp工具
                 .call()
                 .chatResponse();
         String content = chatResponse.getResult().getOutput().getText();

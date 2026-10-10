@@ -5,3 +5,6 @@ spring:
     active: stdio
 server:
   port: 8127
+
+pixabay:
+  api-key: 57966554-d1dfd924181a4c8786bca6281

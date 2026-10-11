@@ -60,6 +60,8 @@ public class LoveApp {
                 .chatMemoryRepository(new FileBasedChatMemoryRepository(fileDir)) // 构建基于文件的对话记忆，最多保留 20 条消息
                 .build();
 
+
+
         // 构建 ChatClient,在用户调用时需要 .advisors(a -> a.param(ChatMemory.CONVERSATION_ID, conversationId)) 来指定对话 ID
         chatClient = ChatClient.builder(dashScopeChatModel)
                 .defaultSystem(SYSTEM_PROMPT)
@@ -115,7 +117,7 @@ public class LoveApp {
             throw new IllegalArgumentException("chatId 不能为空");
 
         ChatResponse chatResponse = chatClient
-                .prompt()
+                .prompt()// 构建提示
                 .user(user -> {
                     user.text(message);
                     if (mediaList != null) {
@@ -123,7 +125,7 @@ public class LoveApp {
                                 .filter(media -> media != null)
                                 .forEach(media -> user.media(media));
                     }
-                })
+                })// 添加用户消息,每个消息可以包含文本和媒体
 //                .options(// 限制最大输出令牌数
 //                        ChatOptions.builder()
 //                                .maxTokens(1024)

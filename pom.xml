@@ -198,6 +198,26 @@
             <version>9.1.0</version>
             <scope>test</scope>
         </dependency>
+        <!-- Markdown 解析 -->
+        <dependency>
+            <groupId>org.commonmark</groupId>
+            <artifactId>commonmark</artifactId>
+            <version>0.24.0</version>
+        </dependency>
+
+        <!-- Markdown 表格支持 -->
+        <dependency>
+            <groupId>org.commonmark</groupId>
+            <artifactId>commonmark-ext-gfm-tables</artifactId>
+            <version>0.24.0</version>
+        </dependency>
+
+        <!-- HTML 转 PDF，对应 iText 9.1.0 -->
+        <dependency>
+            <groupId>com.itextpdf</groupId>
+            <artifactId>html2pdf</artifactId>
+            <version>6.1.0</version>
+        </dependency>
 
 
     </dependencies>

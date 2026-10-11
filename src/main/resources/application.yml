@@ -20,6 +20,15 @@ spring:
               url: http://huilingyun.asia:8127
 #        stdio:
 #          servers-configuration: classpath:mcp-servers.json
+    #大模型失败调用重试配置
+    retry:
+      # 首次调用 + 最多重试 4 次
+      max-attempts: 4
+      backoff:
+        initial-interval: 1s
+        multiplier: 2
+        max-interval: 5s
+      on-client-errors: false
 
 server:
   port: 8124

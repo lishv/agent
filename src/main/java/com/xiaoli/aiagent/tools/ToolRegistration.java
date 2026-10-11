@@ -25,15 +25,24 @@ public class ToolRegistration {
         TerminalOperationTool terminalOperationTool = new TerminalOperationTool();
         PDFGenerationTool pdfGenerationTool = new PDFGenerationTool();
         TerminateTool terminateTool = new TerminateTool();
+        AskHumanTool askHumanTool = new AskHumanTool(question ->
+                """
+                【示例回答，仅用于演示】
+                两个人的总预算为 300 元。
+                希望以公园散步、吃饭和喝咖啡为主。
+                不吃辣，不安排需要长距离步行的活动。
+                """
+        );
         // 注册所有工具
         return ToolCallbacks.from(
                 fileOperationTool,
-                webSearchTool,
+                //webSearchTool,
                 webSearchScrapingTool,
                 webScrapingTool,
                 resourceDownloadTool,
                 terminalOperationTool,
                 pdfGenerationTool,
+                askHumanTool,
                 terminateTool
         );
     }

@@ -99,11 +99,11 @@ public abstract class BaseAgent {
      * 运行代理（流式输出）
      *
      * @param userPrompt 用户提示词
-     * @return 执行结果
+     * @return 执行结果,每一步的执行结果,而不是整个结果
      */
     public SseEmitter runStream(String userPrompt) {
         // 创建一个超时时间较长的 SseEmitter
-        SseEmitter sseEmitter = new SseEmitter(300000L); // 5 分钟超时
+        SseEmitter sseEmitter = new SseEmitter(1800000L); // 30 分钟超时
         // 使用线程异步处理，避免阻塞主线程
         CompletableFuture.runAsync(() -> {
             // 1、基础校验
@@ -146,7 +146,7 @@ public abstract class BaseAgent {
                     results.add("Terminated: Reached max steps (" + maxSteps + ")");
                     sseEmitter.send("执行结束：达到最大步骤（" + maxSteps + "）");
                 }
-                // 正常完成
+                // 正常完成,结束关闭
                 sseEmitter.complete();
             } catch (Exception e) {
                 state = AgentState.ERROR;

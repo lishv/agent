@@ -16,6 +16,7 @@ import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.model.tool.ToolCallingManager;
 import org.springframework.ai.model.tool.ToolExecutionResult;
+import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.tool.ToolCallback;
 
 import java.util.List;
@@ -47,9 +48,17 @@ public class ToolCallAgent extends ReActAgent {
         this.toolCallingManager = ToolCallingManager.builder().build();
 
         // 禁用 Spring AI 内置的工具调用机制，自己维护选项和消息上下文
-        this.chatOptions = DashScopeChatOptions.builder() //ToolCallingChatOptions.builder()若非阿里的大模型，需要这行代码
-                .multiModel(true)// 开启多模型支持
-                .withInternalToolExecutionEnabled(false)// 由于禁用 Spring AI 内置的工具调用机制,需要在application-local.yml中配置multi-model: true,并开启多模型支持
+//        this.chatOptions = DashScopeChatOptions.builder() //若非阿里的大模型，需要别的
+//                .multiModel(true)// 开启多模型支持
+                    // think()和act() 手动执行工具时，也能从选项中找到对应工具
+//                .toolCallbacks(availableTools)
+//                .withInternalToolExecutionEnabled(false)// 由于禁用 Spring AI 内置的工具调用机制,需要在application-local.yml中配置multi-model: true,并开启多模型支持
+//                .build();
+        this.chatOptions = OpenAiChatOptions.builder()
+                //think() act() 手动执行工具时，也能从选项中找到对应工具,全局赋予工具能力
+                .toolCallbacks(availableTools)
+                // 由自己的 think() / act() 控制工具调用流程
+                .internalToolExecutionEnabled(false)
                 .build();
     }
 
@@ -87,7 +96,7 @@ public class ToolCallAgent extends ReActAgent {
             ChatResponse chatResponse = getChatClient()
                     .prompt(prompt)//历史提示词和调用模型的参数整合到Prompt中,然后传递个大模型调用,不用再次设置如model,temperature,max_tokens等参数
                     .system(getSystemPrompt())// 设置系统提示词,即大模型的初始提示,用于引导大模型的行为
-                    .toolCallbacks(availableTools)//可用的所有工具和Mcp工具
+                    //.toolCallbacks(availableTools)//可用的所有工具和Mcp工具
                     .call()
                     .chatResponse();
 

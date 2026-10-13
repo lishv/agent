@@ -17,7 +17,12 @@ public class TerminalOperationTool {
      //中文 Windows 的 cmd.exe 通常使用 GBK 编码输出
     private static final Charset CMD_CHARSET = Charset.forName("GBK");
 
-    @Tool(description = "Execute a command in the terminal")
+    @Tool(description = """
+        Execute a command using Windows cmd.exe.
+        Generate Windows CMD-compatible commands.
+        Do not assume Bash, Unix commands or third-party programs are installed.
+        Use this tool only when terminal execution is necessary.
+        """)
     public String executeTerminalCommand(
             @ToolParam(description = "Command to execute in the terminal") String command) {
         // 输出执行结果

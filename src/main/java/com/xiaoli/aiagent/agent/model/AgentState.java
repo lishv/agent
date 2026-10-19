@@ -23,5 +23,8 @@ public enum AgentState {
     /**
      * 错误状态
      */
-    ERROR
+    ERROR,
+
+    /** 用户取消或客户端断开连接。 */
+    CANCELLED
 }

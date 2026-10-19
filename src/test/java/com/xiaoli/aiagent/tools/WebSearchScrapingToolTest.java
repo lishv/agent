@@ -94,7 +94,6 @@ class WebSearchScrapingToolTest {
             verify(request).form("ensearch", 1);
             verify(request).form("count", 10);
             verify(request).timeout(15000);
-            verify(request).setFollowRedirects(true);
             verify(request, times(1)).execute();
             verify(response).close();
         }

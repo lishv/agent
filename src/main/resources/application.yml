@@ -3,7 +3,6 @@ spring:
     name: ai-agent
   profiles:
     active: local
-
   ai:
     vectorstore:
       pgvector:
@@ -18,8 +17,13 @@ spring:
           connections:
             server1:
               url: http://huilingyun.asia:8127
-#        stdio:
-#          servers-configuration: classpath:mcp-servers.json
+        streamable-http:
+          connections:
+            amap:
+              # 高德使用独立 HTTP 连接，不依赖本地 npx.cmd 或图片服务 JAR。
+              url: https://mcp.amap.com
+              endpoint: /mcp?key=${AMAP_MAPS_API_KEY:${amap.api-key:}}
+        # 旧 mcp-servers.json 是 stdio 方式的备用配置，当前不加载，避免重复启动图片服务。
     #大模型失败调用重试配置
     retry:
       # 首次调用 + 最多重试 4 次
@@ -29,11 +33,66 @@ spring:
         multiplier: 2
         max-interval: 5s
       on-client-errors: false
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/ai_agent?useSSL=false&serverTimezone=UTC
+    username: root
+    password: ${MYSQL_PASSWORD:}
+  session:
+    store-type: redis
+    timeout: 30d
+    redis:
+      namespace: huiling:session
+      flush-mode: on_save
+  data:
+    redis:
+      database: 2
+      host: localhost
+      port: 6379
+      password: ${REDIS_PASSWORD:}
+      timeout: 300s
+
+app:
+  storage:
+    # 默认相对于应用启动目录，服务器可通过环境变量覆盖。
+    base-dir: ${APP_STORAGE_BASE_DIR:./tmp}
+    # 从工具完整写入文件开始计算；访问下载链接不会延长有效期。
+    file-retention: ${APP_FILE_RETENTION:PT24H}
+    # 启动后清理一次，此后每 5 分钟扫描工具目录，不清理聊天记忆。
+    cleanup-interval: ${APP_FILE_CLEANUP_INTERVAL:PT5M}
+  vector-store:
+    # 默认复用已有知识库。需要启动时导入文档时改为 true，导入完成后改回 false。
+    initialize-data: false
+
+chat-memory:
+  base-dir: ${CHAT_MEMORY_BASE_DIR:${app.storage.base-dir}/chat-memory}
+  compaction:
+    enabled: true
+    auto-enabled: true
+    threshold: 0.70
+    target-ratio: 0.40
+    retain-turns: 4
+    summary-max-tokens: 2048
+    apps:
+      # 以下是应用工作预算；请按接入模型/网关的实际限制调整，不是模型上限声明。
+      love:
+        context-window-tokens:  735000
+        response-reserve-tokens: 315000
+      manus:
+        context-window-tokens: 735000
+        response-reserve-tokens: 315000
 
 server:
   port: 8124
   servlet:
     context-path: /api
+    session:
+      cookie:
+        name: HUILING_SESSION
+        http-only: true
+        same-site: lax
+        max-age: 30d
+        secure: ${SESSION_COOKIE_SECURE:false}
 
 # 修改日志级别，查看 Spring AI 更多调用细节
 logging:
@@ -65,4 +124,18 @@ knife4j:
     language: zh_cn
 # 搜索API配置
 search-api:
-  api-key: nXunxe3B197Lnauu5nB9bNeG
+  api-key: ${SEARCH_API_KEY:}
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      logic-delete-field: isDeleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+# 默认字体随应用打包；也支持服务器上的相对字体路径或 file: URI。
+pdf:
+  fonts:
+    regular: ${PDF_FONT_REGULAR:classpath:fonts/NotoSansSC-Regular.otf}
+    bold: ${PDF_FONT_BOLD:classpath:fonts/NotoSansSC-Bold.otf}

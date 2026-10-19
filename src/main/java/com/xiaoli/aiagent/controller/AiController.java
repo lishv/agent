@@ -1,109 +1,80 @@
 package com.xiaoli.aiagent.controller;
 
-import com.xiaoli.aiagent.agent.MyManus;
-import com.xiaoli.aiagent.app.LoveApp;
-import jakarta.annotation.Resource;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.ToolCallbackProvider;
-import org.springframework.beans.factory.annotation.Qualifier;
+import com.xiaoli.aiagent.domain.dto.ChatRequests.ChatRequest;
+import com.xiaoli.aiagent.domain.dto.ChatRequests.HumanAnswerRequest;
+import com.xiaoli.aiagent.exception.ErrorResponse;
+import com.xiaoli.aiagent.service.AccountService;
+import com.xiaoli.aiagent.service.ChatApplicationService;
+
+import jakarta.servlet.http.HttpServletRequest;
+
+import lombok.RequiredArgsConstructor;
+
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+
 import reactor.core.publisher.Flux;
 
-import java.io.IOException;
+import java.util.Map;
 
+/** 前端聊天入口：POST 流式请求及智能体追问回答。取消任务统一使用会话接口。 */
 @RestController
 @RequestMapping("/ai")
+@RequiredArgsConstructor
 public class AiController {
-
-    @Resource
-    private LoveApp loveApp;
-
-    @Resource
-    private ToolCallback[] allTools;//所有自带工具
-    @Resource
-    private ToolCallbackProvider toolCallbackProvider;//所有MCP工具
-
-    @Resource(name = "openAiChatModel")
-    private ChatModel openAiChatModel;
+    private static final String SSE = MediaType.TEXT_EVENT_STREAM_VALUE + ";charset=UTF-8";
+    private final ChatApplicationService chats;
+    private final AccountService accounts;
 
     /**
-     * 同步调用 AI 恋爱大师应用
+     * 启动恋爱助手对话，将文本片段包装为 SSE；流内异常转换为 error 事件。
      *
-     * @param message
-     * @param chatId
-     * @return  恋爱大师应用的响应
+     * @param body 消息和会话标识
+     * @param request HTTP 请求对象
+     * @return 文本片段及可能的错误事件流
      */
-    @GetMapping("/love_app/chat/sync")
-    public String doChatWithLoveAppSync(String message, String chatId) {
-        return loveApp.doChat(message, chatId);
+    @PostMapping(value = "/love_app/chat/sse", produces = SSE)
+    public Flux<ServerSentEvent<String>> loveChat(
+            @RequestBody ChatRequest body, HttpServletRequest request) {
+        return chats.loveStream(
+                        accounts.requireUser(request).getId(), body.message(), body.chatId())
+                .map(chunk -> ServerSentEvent.builder(chunk).build())
+                .onErrorResume(
+                        error ->
+                                Flux.just(
+                                        ServerSentEvent.builder(ErrorResponse.from(error).message())
+                                                .event("error")
+                                                .build()));
     }
 
     /**
-     * SSE 流式调用 AI 恋爱大师应用(方法一)
+     * 启动当前用户的智能体任务，返回步骤、追问和最终答案的 SSE 通道。
      *
-     * @param message 用户文本
-     * @param chatId  对话 ID
-     * @return  流式传输的 AI 回复内容
+     * @param body 智能体对话请求体
+     * @param request HTTP 请求对象
+     * @return SSE 发送器
      */
-    @GetMapping(value = "/love_app/chat/sse", produces = MediaType.TEXT_EVENT_STREAM_VALUE)// 流式传输
-    public Flux<String> doChatWithLoveAppSSE(String message, String chatId) {
-        return loveApp.doChatByStream(message, chatId);
-    }
+    @PostMapping(value = "/manus/chat", produces = SSE)
+    public SseEmitter manusChat(@RequestBody ChatRequest body, HttpServletRequest request) {
+        return chats.manusStream(accounts.requireUser(request).getId(), body.message(), body.chatId(), body.runId());}
 
     /**
-     * SSE 流式调用 AI 恋爱大师应用(方法二)
+     * 校验任务归属并提交追问答案，让等待中的智能体继续执行。
      *
-     * @param message
-     * @param chatId
-     * @return
+     * @param body 智能体追问回答请求体
+     * @param request HTTP 请求对象
+     * @return accepted=true 表示答案已被当前任务接收
      */
-    @GetMapping(value = "/love_app/chat/server_sent_event")
-    public Flux<ServerSentEvent<String>> doChatWithLoveAppServerSentEvent(String message, String chatId) {
-        return loveApp.doChatByStream(message, chatId)
-                .map(chunk -> ServerSentEvent.<String>builder()
-                        .data(chunk)
-                        .build());
-    }
-
-    /**
-     * SSE 流式调用 AI 恋爱大师应用(方法三)
-     *
-     * @param message
-     * @param chatId
-     * @return
-     */
-    @GetMapping(value = "/love_app/chat/sse_emitter")
-    public SseEmitter doChatWithLoveAppServerSseEmitter(String message, String chatId) {
-        // 创建一个超时时间较长的 SseEmitter
-        SseEmitter sseEmitter = new SseEmitter(180000L); // 3 分钟超时
-        // 获取 Flux 响应式数据流并且直接通过订阅推送给 SseEmitter
-        loveApp.doChatByStream(message, chatId)
-                .subscribe(chunk -> {
-                    try {
-                        sseEmitter.send(chunk);
-                    } catch (IOException e) {
-                        sseEmitter.completeWithError(e);
-                    }
-                }, sseEmitter::completeWithError, sseEmitter::complete);
-        // 返回
-        return sseEmitter;
-    }
-
-    /**
-     * 流式调用 Manus 超级智能体
-     *
-     * @param message
-     * @return
-     */
-    @GetMapping("/manus/chat")
-    public SseEmitter doChatWithManus(String message) {
-        MyManus myManus = new MyManus(allTools,openAiChatModel,toolCallbackProvider);
-        return myManus.runStream(message);
+    @PostMapping("/manus/answer")
+    public Map<String, Boolean> answer(
+            @RequestBody HumanAnswerRequest body, HttpServletRequest request) {
+        chats.answer(
+                accounts.requireUser(request).getId(),
+                body.runId(),
+                body.questionId(),
+                body.answer());
+        return Map.of("accepted", true);
     }
 }

@@ -3,6 +3,8 @@ package com.xiaoli.aiagent.agent;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.extern.slf4j.Slf4j;
+import com.xiaoli.aiagent.agent.model.AgentState;
+import org.springframework.ai.chat.messages.AssistantMessage;
 
 /**
  * ReAct (Reasoning and Acting) 模式的代理抽象类
@@ -36,19 +38,18 @@ public abstract class ReActAgent extends BaseAgent {
      */
     @Override
     public String step() {
-        try {
-            // 先思考
-            boolean shouldAct = think();
-            if (!shouldAct) {
-                return "思考完成 - 无需行动";
+        boolean shouldAct = think();
+        if (!shouldAct) {
+            setState(AgentState.FINISHED);
+            // 用户补充信息后的最终回答也要返回前端，而不是只写入日志。
+            if (!getMessageList().isEmpty()
+                    && getMessageList().getLast() instanceof AssistantMessage message) {
+                return message.getText();
             }
-            // 再行动
-            return act();
-        } catch (Exception e) {
-            // 记录异常日志
-            e.printStackTrace();
-            return "步骤执行失败：" + e.getMessage();
+            return "任务处理结束";
         }
+        // 异常交给 BaseAgent 结束任务，不能在等待超时后继续反复提问。
+        return act();
     }
 
 }

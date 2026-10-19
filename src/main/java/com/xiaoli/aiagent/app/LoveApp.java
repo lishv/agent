@@ -1,28 +1,35 @@
 package com.xiaoli.aiagent.app;
 
 import com.xiaoli.aiagent.advisor.MyLoggerAdvisor;
-import com.xiaoli.aiagent.chatmemory.FileBasedChatMemoryRepository;
+import com.xiaoli.aiagent.advisor.CompactingMemoryAdvisor;
+import com.xiaoli.aiagent.app.prompt.LoveAppPrompts;
+import com.xiaoli.aiagent.service.ContextMemoryService;
+import com.xiaoli.aiagent.exception.ErrorCode;
+import com.xiaoli.aiagent.exception.ThrowUtils;
 import com.xiaoli.aiagent.rag.LoveAppRagCustomAdvisorFactory;
 import com.xiaoli.aiagent.rag.QueryRewriter;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
-import org.springframework.ai.chat.memory.MessageWindowChatMemory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.ChatOptions;
+import org.springframework.ai.chat.prompt.PromptTemplate;
 import org.springframework.ai.content.Media;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
+import com.xiaoli.aiagent.tools.AiToolCallbacks;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
 import java.util.List;
+import java.util.Arrays;
+import java.util.Map;
 
 
 @Component
@@ -39,35 +46,23 @@ public class LoveApp {
     @Resource
     private QueryRewriter queryRewriter;
 
-    @Resource
-    private VectorStore loveVectorStore;
-//    @Resource(name = "pgVectorVectorStore")
-//    private VectorStore pgVectorVectorStore;
+//    @Resource
+//    private VectorStore loveVectorStore;
+    @Resource(name = "pgVectorVectorStore")
+    private VectorStore pgVectorVectorStore;
 
     private ChatClient chatClient;
-    private static final String SYSTEM_PROMPT = "你是深耕恋爱心理领域的专家。开场向用户表明身份，告知用户可倾诉恋爱难题。" +
-            "围绕单身、恋爱、已婚三种状态提问：单身状态询问社交圈拓展及追求心仪对象的困扰；" +
-            "恋爱状态询问沟通、习惯差异引发的矛盾；已婚状态询问家庭责任与亲属关系处理的问题。" +
-            "引导用户详述事情经过、对方反应及自身想法，以便给出专属解决方案。";
+    private static final String SYSTEM_PROMPT = LoveAppPrompts.SYSTEM;
 
-    public LoveApp(ChatModel dashScopeChatModel) {
-        //基于初始化文件的对话记忆
-        String fileDir = System.getProperty("user.dir") + "/tmp/chat-memory";
+    public LoveApp(@Qualifier("dashScopeChatModel") ChatModel dashScopeChatModel, ContextMemoryService contextMemory) {
 
-        // 构建基于内存的对话记忆，最多保留 20 条消息
-        ChatMemory chatMemory = MessageWindowChatMemory.builder()
-                .maxMessages(20)
-                //.chatMemoryRepository(new InMemoryChatMemoryRepository()) // 使用内存存储对话历史
-                .chatMemoryRepository(new FileBasedChatMemoryRepository(fileDir)) // 构建基于文件的对话记忆，最多保留 20 条消息
-                .build();
-
-
+        contextMemory.registerProfile("love", SYSTEM_PROMPT, new ToolCallback[0], "");
 
         // 构建 ChatClient,在用户调用时需要 .advisors(a -> a.param(ChatMemory.CONVERSATION_ID, conversationId)) 来指定对话 ID
         chatClient = ChatClient.builder(dashScopeChatModel)
                 .defaultSystem(SYSTEM_PROMPT)
                 .defaultAdvisors(
-                        MessageChatMemoryAdvisor.builder(chatMemory).build(),
+                        new CompactingMemoryAdvisor(contextMemory),
                         // 自定义日志 Advisor，可按需开启
                         new MyLoggerAdvisor()
                         // 自定义推理增强 Advisor，可按需开启
@@ -112,10 +107,8 @@ public class LoveApp {
      * @return AI 回复
      */
     public String doChatWithMedia(String message, String chatId, List<Media> mediaList) {
-        if (message == null || message.isBlank())
-            throw new IllegalArgumentException("message 不能为空");
-        if (chatId == null || chatId.isBlank())
-            throw new IllegalArgumentException("chatId 不能为空");
+        ThrowUtils.throwIf(message == null || message.isBlank(), ErrorCode.PARAMS_ERROR, "message 不能为空");
+        ThrowUtils.throwIf(chatId == null || chatId.isBlank(), ErrorCode.PARAMS_ERROR, "chatId 不能为空");
 
         ChatResponse chatResponse = chatClient
                 .prompt()// 构建提示
@@ -137,8 +130,8 @@ public class LoveApp {
                 .call()
                 .chatResponse();
 
-        if (chatResponse == null || chatResponse.getResult() == null || chatResponse.getResult().getOutput() == null)
-            throw new IllegalStateException("模型未返回有效回复");
+        ThrowUtils.throwIf(chatResponse == null || chatResponse.getResult() == null || chatResponse.getResult().getOutput() == null,
+                ErrorCode.OPERATION_ERROR, "模型未返回有效回复");
 
         String content = chatResponse.getResult().getOutput().getText();
         String model = chatResponse.getMetadata().getModel();
@@ -191,7 +184,7 @@ public class LoveApp {
                 .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, chatId))
                 // 开启日志，便于观察效果,默认开启过的
                 // 应用 RAG 知识库问答(基于内存)
-                .advisors(QuestionAnswerAdvisor.builder(loveVectorStore).build())
+              //  .advisors(QuestionAnswerAdvisor.builder(loveVectorStore).build())
                 // 应用 RAG 检索增强服务（基于云知识库服务）
 //                .advisors(loveAppRagCloudAdvisor)
                 // 应用 RAG 检索增强服务（基于 PgVector 向量存储）
@@ -216,6 +209,11 @@ public class LoveApp {
      * @return
      */
     public String doChatWithTools(String message, String chatId) {
+        return doChatWithTools(message, chatId, Map.of());
+    }
+
+    /** 同步工具调用同样接收服务端身份上下文，受保护的文件工具不依赖 HTTP 线程或模型参数。 */
+    public String doChatWithTools(String message, String chatId, Map<String, Object> toolContext) {
         ChatResponse chatResponse = chatClient
                 .prompt()
                 .user(message)
@@ -223,6 +221,7 @@ public class LoveApp {
                 // 开启日志，便于观察效果
                 .advisors(new MyLoggerAdvisor())
                 .toolCallbacks(allTools)
+                .toolContext(toolContext)
                 .call()
                 .chatResponse();
         String content = chatResponse.getResult().getOutput().getText();
@@ -247,8 +246,8 @@ public class LoveApp {
                 .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, chatId))
                 // 开启日志，便于观察效果
                 .advisors(new MyLoggerAdvisor())
-                .toolCallbacks(toolCallbackProvider)//包含地图和图片搜索mcp工具
-                .call()
+                .toolCallbacks(AiToolCallbacks.merge(new ToolCallback[0], toolCallbackProvider.getToolCallbacks()))
+                .call()// 调用模型
                 .chatResponse();
         String content = chatResponse.getResult().getOutput().getText();
         log.info("content: {}", content);
@@ -262,10 +261,31 @@ public class LoveApp {
      * @return  流式传输的 AI 回复内容
      */
     public Flux<String> doChatByStream(String message, String chatId) {
+        return doChatByStream(message, chatId, Map.of());
+    }
+
+    /**
+     * 使用服务端提供的用户和任务上下文执行流式对话，使文件工具能够校验归属并生成下载链接。
+     *
+     * @param message 用户消息
+     * @param chatId 模型记忆标识
+     * @param toolContext 由业务服务注入的工具上下文，不作为模型工具参数
+     * @return 流式回复
+     */
+    public Flux<String> doChatByStream(String message, String chatId, Map<String, Object> toolContext) {
+        ToolCallback[] mcpTools = toolCallbackProvider.getToolCallbacks();
+        log.debug("恋爱助手可用 MCP 工具：{}", Arrays.stream(mcpTools)
+                .map(tool -> tool.getToolDefinition().name()).toList());
+        ToolCallback[] tools = AiToolCallbacks.merge(allTools, mcpTools);
         return chatClient
                 .prompt()
                 .user(message)
                 .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, chatId))
+                .advisors(QuestionAnswerAdvisor.builder(pgVectorVectorStore)
+                        .promptTemplate(new PromptTemplate(LoveAppPrompts.RAG_CONTEXT))
+                        .build())// 情感知识作为参考，同时允许地图等工具提供实时事实
+                .toolCallbacks(tools)// 包含所有工具+mcp工具
+                .toolContext(toolContext)// Spring AI 在后台执行工具时传递本轮用户和任务身份
                 .stream()// 开启流式传输
                 .content();
     }

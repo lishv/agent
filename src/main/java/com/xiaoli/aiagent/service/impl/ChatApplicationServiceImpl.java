@@ -28,15 +28,15 @@ import java.util.UUID;
 public class ChatApplicationServiceImpl implements ChatApplicationService {
     private final LoveApp love;
     private final ManusRunService manus;
-    private final ConversationService conversations;
-    private final Sinks.Empty<Void> shutdown = Sinks.empty();
+    private final ConversationService conversationService;// 会话服务
+    private final Sinks.Empty<Void> shutdown = Sinks.empty();// 用于通知所有会话关闭
 
     /** 准备本轮记录并在服务端订阅模型输出；浏览器断开不取消任务，显式取消或停机时收尾。 */
     @Override
     public Flux<String> loveStream(Long userId, String message, String chatId) {
-        var journal = conversations.begin(userId, "love", chatId, message);
-        var cancel = Sinks.<Boolean>one();
-        journal.onCancel(() -> cancel.tryEmitValue(true));
+        var journal = conversationService.begin(userId, "love", chatId, message);//用于创建或恢复会话,登记本轮记录器并写入用户消息；同一会话不能重复启动。此外message为用户输入的消息
+        var cancel = Sinks.<Boolean>one();// 用于通知模型取消执行
+        journal.onCancel(() -> cancel.tryEmitValue(true));//journal.onCancel(...) 注册回调
         try {
             // 每轮使用独立任务标识，身份取自登录用户；同一会话重写同名文件也不会覆盖上一轮。
             Map<String, Object> toolContext = Map.of(
@@ -72,7 +72,7 @@ public class ChatApplicationServiceImpl implements ChatApplicationService {
     @Override
     public SseEmitter manusStream(Long userId, String message, String chatId, String runId) {
         // 准备会话记录员
-        var journal = conversations.begin(userId, "manus", chatId, message);
+        var journal = conversationService.begin(userId, "manus", chatId, message);
         try {
             return manus.start(message, runId, journal.memoryId(), userId, journal);
         } catch (RuntimeException e) {

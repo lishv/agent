@@ -255,7 +255,7 @@ public class LoveApp {
     }
     /**
      * AI 基础对话（支持多轮对话记忆，SSE 流式传输）
-     *
+     *目前没用
      * @param message 用户文本
      * @param chatId  对话 ID
      * @return  流式传输的 AI 回复内容

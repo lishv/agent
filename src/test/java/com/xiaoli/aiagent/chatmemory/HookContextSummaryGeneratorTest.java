@@ -48,7 +48,7 @@ class HookContextSummaryGeneratorTest {
         assertTrue(requests.getFirst().getUserMessage().getText().contains("起始目标唯一标识"));
         assertTrue(requests.getLast().getUserMessage().getText().contains("历史尾部唯一标识"));
         assertTrue(requests.getLast().getUserMessage().getText().contains("分块摘要" + (calls.get() - 1)));
-        assertTrue(requests.stream().allMatch(prompt -> tokens.messages(prompt.getInstructions()) <= 4096));
+        assertTrue(requests.stream().allMatch(prompt -> tokens.computeMessagesTokens(prompt.getInstructions()) <= 4096));
     }
 
     @Test void propagatesModelFailureInsteadOfAcceptingTheHooksErrorString() {

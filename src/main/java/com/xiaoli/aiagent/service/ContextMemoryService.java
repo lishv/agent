@@ -16,8 +16,15 @@ public interface ContextMemoryService {
     void registerProfile(String app, String system, ToolCallback[] tools, String controlPrompt);
 
     /** 用本轮任务的实际配置更新指定会话的提示和工具 Token 开销。 */
-    void registerProfile(
-            String app, String id, String system, ToolCallback[] tools, String controlPrompt);
+    /**
+     * 更新指定会话的提示和工具 Token 开销。
+     * @param app 应用名称
+     * @param chatId 会话ID
+     * @param systemPrompt 系统提示
+     * @param tools 工具定义数组
+     * @param nextStepPrompt 下一步提示
+     */
+    void registerProfile(String app, String chatId, String systemPrompt, ToolCallback[] tools, String nextStepPrompt);
 
     /** 独占打开会话上下文并恢复历史；该会话已被任务使用时拒绝打开。 */
     List<Message> open(String app, String id);

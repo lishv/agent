@@ -12,11 +12,11 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class QueryRewriter {
-
+    //把用户问题改写成更适合向量库检索的表达
     private final QueryTransformer queryTransformer;
 
-    public QueryRewriter(ChatModel ollamaChatModel) {
-        ChatClient.Builder builder = ChatClient.builder(ollamaChatModel);
+    public QueryRewriter(ChatModel openAiChatModel) {
+        ChatClient.Builder builder = ChatClient.builder(openAiChatModel);
         // 创建查询重写转换器
         queryTransformer = RewriteQueryTransformer.builder()
                 .chatClientBuilder(builder)

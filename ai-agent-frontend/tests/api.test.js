@@ -120,6 +120,14 @@ test('最终答案事件与进展分别处理，完成事件之后不继续输�
   assert.deepEqual(final, ['第一段最终答案\n第二段最终答案'])
 })
 
+test('图片预览可取消附件请求，不影响原有下载调用', async () => {
+  const controller = new AbortController()
+  controller.abort()
+  const before = requests.length
+  await assert.rejects(downloadGeneratedFile('/api/files/download/download-run-1?name=cat.png', { signal: controller.signal }), error => error.code === 'ERR_CANCELED')
+  assert.equal(requests.length, before)
+})
+
 test('昵称修改携带账号归属与 CSRF，验证码登录失败不触发会话过期', async () => {
   const previousWindow = globalThis.window, events = []
   globalThis.window = { dispatchEvent: event => events.push(event.type) }

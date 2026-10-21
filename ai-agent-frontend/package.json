@@ -7,7 +7,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "node --test --test-concurrency=1 tests/sse.test.js tests/api.test.js tests/chat.test.js tests/presentation.test.js tests/fileDownloads.test.js"
+    "test": "node --test --test-concurrency=1 tests/sse.test.js tests/api.test.js tests/chat.test.js tests/presentation.test.js tests/fileDownloads.test.js tests/imagePreviews.test.js"
   },
   "engines": {
     "node": ">=20.0.0"

@@ -94,7 +94,8 @@ function imageSearchResults(data) {
     const page = safeLink(image?.pageUrl)
     const dimensions = Number.isInteger(image?.width) && image.width > 0 && Number.isInteger(image?.height) && image.height > 0
       ? ` · ${image.width} × ${image.height}${image.isPreview ? '（预览图）' : ''}` : ''
-    return `${index + 1}. [${escapeMarkdown(title)}](${url})${dimensions}${page ? ` · [来源页面](${page})` : ''}`
+    // 标准图片语法让无扩展名的图片地址也能预览，原链接和来源继续用于下载与追溯。
+    return `${index + 1}. [${escapeMarkdown(title)}](${url})${dimensions}${page ? ` · [来源页面](${page})` : ''}\n\n   ![${escapeMarkdown(title)}](${url})`
   }).filter(Boolean)
   const source = escapeMarkdown(readable(data?.source) || '图库')
   const incomplete = data?.complete === false ? `\n${escapeMarkdown(readable(data?.message) || '当前结果不足，请查看实际张数。')}\n` : ''

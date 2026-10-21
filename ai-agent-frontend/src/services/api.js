@@ -29,11 +29,11 @@ export const getContextUsage = async (id) => (await http.get(`/chats/${encodeURI
 export const compactContext = async (id) => (await http.post(`/chats/${encodeURIComponent(id)}/context/compact`, {}, { timeout: 10000 })).data
 
 /** 使用已配置的后端地址与登录态获取附件；过期等失败响应仍按业务错误展示。 */
-export async function downloadGeneratedFile(href) {
+export async function downloadGeneratedFile(href, { signal } = {}) {
   const path = generatedFileRequest(href)
   if (!path) throw new Error('下载链接无效，请重新生成文件。')
   try {
-    const response = await http.get(path, { responseType: 'blob', timeout: 120000 })
+    const response = await http.get(path, { responseType: 'blob', timeout: 120000, signal })
     return { blob: response.data, filename: downloadFilename(response.headers.get('content-disposition'), href) }
   } catch (error) {
     if (error.response?.data instanceof Blob) {

@@ -6,6 +6,8 @@ import DOMPurify from 'dompurify'
 import { presentMessage } from '../services/messagePresentation.js'
 import { generatedFileRequest } from '../services/fileDownloads.js'
 import { accountError, downloadGeneratedFile } from '../services/api.js'
+import { collectMessageImages, imagePreviewSource } from '../services/imagePreviews.js'
+import MessageImage from './MessageImage.vue'
 
 const props = defineProps({ message: { type: Object, required: true }, appId: { type: String, required: true }, busy: Boolean })
 const emit = defineEmits(['retry'])
@@ -39,12 +41,24 @@ function renderCodeBlock(tokens, index) {
 }
 markdown.renderer.rules.fence = renderCodeBlock
 markdown.renderer.rules.code_block = renderCodeBlock
-const render = (text) => DOMPurify.sanitize(markdown.render(text || ''), { ADD_ATTR: ['target'] })
+const defaultImage = markdown.renderer.rules.image
+// 过程消息不渲染图片；最终回复统一使用预览组件，复用本站附件鉴权。
+markdown.renderer.rules.image = (tokens, index, options, env, self) => !isFinalAnswer.value || imagePreviewSource(tokens[index].attrGet('src'), true)
+  ? '' : defaultImage(tokens, index, options, env, self)
 const displayContent = computed(() => presentMessage(props.message.content, props.appId, props.message.role))
 // 只给完整工具回执添加视觉分组；混合说明或最终回答继续按正文展示。
 const isToolResult = computed(() => props.message.role === 'assistant' && /^\*\*(?:已(?:搜索|读取|下载|运行|生成|保存|请求|完成|查询|计算|规划|获取)[^*]*|操作结果|[^*]*未完成)\*\*[：:]/.test(displayContent.value.trim()))
-const isFinalAnswer = computed(() => props.message.role === 'assistant' && (props.message.kind === 'final' || props.appId === 'love'))
-const html = computed(() => render(displayContent.value))
+// 优先使用最终回答标记；兼容旧版恋爱回复时，排除工具回执和执行步骤。
+const isFinalAnswer = computed(() => props.message.role === 'assistant' && !props.message.stepNumber
+  && (props.message.kind === 'final' || (props.appId === 'love' && !props.message.kind && !isToolResult.value)))
+const rendered = computed(() => {
+  const tokens = markdown.parse(displayContent.value || '', {})
+  return {
+    html: DOMPurify.sanitize(markdown.renderer.render(tokens, markdown.options, {}), { ADD_ATTR: ['target'] }),
+    images: isFinalAnswer.value ? collectMessageImages(tokens) : [],
+  }
+})
+const html = computed(() => rendered.value.html)
 const time = computed(() => new Date(props.message.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }))
 
 async function copy() {
@@ -89,6 +103,11 @@ async function handleContentClick(event) {
   const href = anchor?.getAttribute('href')
   if (!anchor || !contentElement.value?.contains(anchor) || !generatedFileRequest(href)) return copyCode(event)
   event.preventDefault()
+  return downloadFile(href)
+}
+
+/** 正文链接和图片卡片共用同一个下载流程，避免重复下载并统一显示错误。 */
+async function downloadFile(href) {
   if (pendingDownloads.has(href)) return
   pendingDownloads.add(href)
   downloadStatus.value = '正在下载…'
@@ -144,6 +163,9 @@ onUnmounted(() => { clearTimeout(timer); codeCopyTimers.forEach(clearTimeout); c
         <div v-if="message.content" ref="contentElement" class="markdown-body message-text" :class="{ 'is-collapsed': !isFinalAnswer && !expanded }" @click="handleContentClick" v-html="html"></div>
         <p v-if="downloadStatus" class="message-error" role="status">{{ downloadStatus }}</p>
         <button v-if="message.content && canExpand" class="message-expand" :aria-expanded="expanded" @click="expanded = !expanded"><ChevronUp v-if="expanded" :size="13" /><ChevronDown v-else :size="13" />{{ expanded ? '收起' : '展开' }}</button>
+        <div v-if="message.content && rendered.images.length" class="message-image-grid" aria-label="图片预览">
+          <MessageImage v-for="image in rendered.images" :key="image.key" :image="image" @download="downloadFile" />
+        </div>
         <div v-for="question in message.questions || []" :key="question.questionId" class="human-question">
           <div class="human-question-heading"><MessageCircle :size="15" /><strong>需要你补充信息</strong></div>
           <p :ref="element => setQuestionElement(question.questionId, element)" class="message-text" :class="{ 'is-collapsed': !questionExpanded[question.questionId] }">{{ question.question }}</p>

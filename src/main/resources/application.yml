@@ -69,17 +69,17 @@ chat-memory:
   compaction:
     enabled: true
     auto-enabled: true
-    threshold: 0.70
-    target-ratio: 0.40
-    retain-turns: 4
-    summary-max-tokens: 2048
+    threshold: 0.70 #压缩阈值 70%
+    target-ratio: 0.15 #压缩目标为 context-window-tokens*15% =4轮旧历史+新摘要+固定token
+    retain-turns: 4  #保留最近 4 轮历史
+    summary-max-tokens: 40960 #摘要最大 token 数
     apps:
       # 以下是应用工作预算；请按接入模型/网关的实际限制调整，不是模型上限声明。
       love:
-        context-window-tokens:  735000
+        context-window-tokens:  1050000
         response-reserve-tokens: 315000
       manus:
-        context-window-tokens: 735000
+        context-window-tokens: 1050000
         response-reserve-tokens: 315000
 
 server:

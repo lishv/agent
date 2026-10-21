@@ -1,6 +1,19 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import MarkdownIt from 'markdown-it'
 import { presentMessage } from '../src/services/messagePresentation.js'
+
+test('图片搜索结果标记可预览的图片，兼容没有扩展名的真实图片地址并保留下载与来源', () => {
+  const image = 'https://cdn.example/image?id=123'
+  const result = { status: 'ok', images: [{ tags: '小猫', downloadUrl: image, pageUrl: 'https://example.test/cats' }] }
+  for (const app of ['love', 'manus']) {
+    const text = presentMessage(`工具 searchImage：${JSON.stringify(result)}`, app)
+    const html = new MarkdownIt().render(text)
+    assert.match(html, /<img src="https:\/\/cdn\.example\/image\?id=123"/)
+    assert.ok(text.includes(`[小猫](${image})`))
+    assert.ok(text.includes('[来源页面](https://example.test/cats)'))
+  }
+})
 
 test('MCP 图片搜索展示下载地址和来源，隐藏原始结构', () => {
   const result = { status: 'ok', source: 'Pixabay', images: [

@@ -37,11 +37,13 @@ import java.util.function.Consumer;
 public final class FileConversationJournal implements Journal {
     private final ChatSession row;//数据库中这条会话的元数据（id、userId、appId、文件路径、标题等），不可变。
     private final String memoryId;//模型记忆标识，格式为 userId_id，传给 ContextMemoryService 读写 .kryo 文件。
-    private final ObjectMapper json;//Jackson JSON 序列化器，保证 messages 中每条消息的 JSON 结构统一。
+    private final ObjectMapper json;//Jackson JSON 序列化器，保证 messagesJson 中每条消息的 JSON 结构统一。
     private final ConversationTranscriptStore conversationTranscriptStore;//负责 .json 文件的原子读写，隔离文件 IO 细节。
     private final Consumer<ChatSession> onSave;//强制保存后回调外部更新 ChatSession.updatedAt 等元数据（数据库时间戳刷新）。
     private final Consumer<FileConversationJournal> onClose;//记录器关闭时回调外部把自身从"活跃会话表"中移除，释放并发锁。
-    private final List<ObjectNode> messages;//页面消息列表，包含历史恢复的消息 + 本轮新增的全部消息，是 .json 文件的内存镜像。
+
+    private final List<ObjectNode> messagesJson;//页面消息列表，包含历史恢复的消息 + 本轮新增的全部消息，是 .json 文件的内存镜像。
+
     private final int firstMessage;//本轮新增消息的起始索引，用于 finish() 时只扫描本轮消息判断状态。
     private ObjectNode loveReply;//本轮流式追加的 AI 最终回复引用（loveChunk 逐块累加 content），用于 failed/complete 时更新状态。
     private boolean closed;//    记录器是否已关闭。关闭后不再接受任何写入，所有方法直接 return。
@@ -73,8 +75,8 @@ public final class FileConversationJournal implements Journal {
         this.conversationTranscriptStore = conversationTranscriptStore;
         this.onSave = onSave;
         this.onClose = onClose;
-        this.messages = conversationTranscriptStore.read(row);
-        this.firstMessage = messages.size();
+        this.messagesJson = conversationTranscriptStore.read(row);
+        this.firstMessage = messagesJson.size();
         stopPendingMessages();
     }
 
@@ -144,7 +146,7 @@ public final class FileConversationJournal implements Journal {
                         .put("status", status)
                         .put("createdAt", System.currentTimeMillis());//    消息创建时间，用于排序和展示。
         item.putArray("questions");
-        messages.add(item);
+        messagesJson.add(item);
         return item;
     }
 
@@ -242,7 +244,7 @@ public final class FileConversationJournal implements Journal {
     @Override
     public synchronized void answer(String questionId, String answer) {
         if (closed) return;
-        for (ObjectNode item : messages)
+        for (ObjectNode item : messagesJson)
             for (var question : item.path("questions")) {
                 if (questionId.equals(question.path("questionId").asText())) {
                     ((ObjectNode) question).put("answer", answer);
@@ -273,7 +275,7 @@ public final class FileConversationJournal implements Journal {
     /** 返回消息列表的深拷贝，防止读取方修改运行中的历史。 */
     @Override
     public synchronized List<ObjectNode> snapshot() {
-        return messages.stream().map(ObjectNode::deepCopy).toList();
+        return messagesJson.stream().map(ObjectNode::deepCopy).toList();
     }
 
     /** 保存完成、失败或中止状态，随后关闭记录器并释放登记；重复调用直接返回。 */
@@ -281,7 +283,7 @@ public final class FileConversationJournal implements Journal {
     public synchronized void finish() {
         if (closed) return;
         boolean pending =
-                messages.subList(firstMessage, messages.size()).stream()
+                messagesJson.subList(firstMessage, messagesJson.size()).stream()
                         .anyMatch(item -> List.of("streaming", "waiting").contains(item.path("status").asText()));
         //  检查是否有未结束的文本或追问消息。
         stopPendingMessages();
@@ -297,7 +299,7 @@ public final class FileConversationJournal implements Journal {
 
     /** 将未结束的文本或追问标为中止，并让所有尚未回答的问题过期。 */
     private void stopPendingMessages() {
-        messages.forEach(
+        messagesJson.forEach(
                 item -> {
                     if (List.of("streaming", "waiting").contains(item.path("status").asText()))
                         item.put("status", "stopped");
@@ -316,7 +318,7 @@ public final class FileConversationJournal implements Journal {
 
         Path target = conversationTranscriptStore.path(row);//根据row获取对应的文件路径
         try {
-            conversationTranscriptStore.write(target, messages);//将messages写入文件,保存效果为json字符串
+            conversationTranscriptStore.writeToJson(target, messagesJson);//将messages写入文件,保存效果为json字符串
 
             lastSave = System.nanoTime();//更新lastSave为当前时间,用于下一次保存间隔计算
 

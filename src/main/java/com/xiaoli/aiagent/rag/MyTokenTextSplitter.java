@@ -22,4 +22,15 @@ class MyTokenTextSplitter {
         TokenTextSplitter splitter = new TokenTextSplitter(200, 100, 10, 5000, true);
         return splitter.apply(documents);
     }
+    /*
+    现在是基于Markdown的切词器
+     */
+    /*
+    参数	                默认值	    含义
+    defaultChunkSize	    800	    每块 800 token
+    minChunkSizeChars	    350	    每块最少 350 字符
+    minChunkLengthToEmbed	5	每块最少 5 个 token（太短的丢弃）
+    maxNumChunks	        10000	最多切 10000 块
+    keepSeparator	        true	保留分隔符
+     */
 }

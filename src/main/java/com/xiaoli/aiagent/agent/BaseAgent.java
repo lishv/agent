@@ -34,10 +34,10 @@ import java.util.function.UnaryOperator;
 public abstract class BaseAgent {
     //UTF-8 文本媒体类型,给 SSE 文本事件贴上 UTF-8 标签，保证中文不乱码。
     private static final MediaType UTF8_TEXT = new MediaType("text", "plain", StandardCharsets.UTF_8);
-    // 心跳线程池，用于定时发送心跳消息
+    // 心跳线程，用于定时发送 SSE 心跳包
     private static final ScheduledExecutorService HEARTBEATS = Executors.newSingleThreadScheduledExecutor(task -> {
         Thread thread = new Thread(task, "ai-agent-sse-heartbeat");
-        thread.setDaemon(true);// 设置为守护线程,确保在主线程退出时,心跳线程也会被销毁。
+        thread.setDaemon(true); // 守护线程，随 JVM 退出而退出
         return thread;
     });
 
@@ -46,22 +46,34 @@ public abstract class BaseAgent {
     private String nextStepPrompt;// 下一步提示
     private String runId;// 任务ID
     private volatile AgentState state = AgentState.IDLE;// 代理状态，默认为IDLE
-    // 当前步骤索引
+    // 当前步骤索引，从 1 开始
     private int currentStep = 0;
     // 最大步骤数
     private int maxSteps = 20;
     private ChatClient chatClient;
     private List<Message> messageList = new ArrayList<>();// 当前对话的所有会话记录(包括历史记录)
-
+    private String finalAnswer;// 最终答案
     //下面均为回调函数
     // 内存写入器，用于持久化对话记忆
+    //memoryWriter 回调 → saveMemory
     private Consumer<List<Message>> memoryWriter = messages -> { };
     // 上下文准备器，用于压缩上下文
+    // contextPreparer 回调 → contextMemoryService.prepareContext
     private UnaryOperator<List<Message>> contextPreparer = messages -> new ArrayList<>(messages);
+
+    //这三个用于将智能体的执行结果和状态写入会话记录中
+    //stepObserver journal::step 智能体每执行一步，把步骤编号和内容写入会话记录
     private BiConsumer<Integer, String> stepObserver = (number, text) -> { };// 每一步的观察者
+    //finalAnswerObserver journal::finalAnswer 智能体得出最终答案时，把答案写入会话记录
     private Consumer<String> finalAnswerObserver = text -> { };// 最终答案观察者
-    private String finalAnswer;// 最终答案
+    //errorObserver journal::failed 智能体出错时，把错误状态写入会话记录
     private Consumer<Throwable> errorObserver = error -> { };// 错误观察者
+
+
+
+
+
+    //streamCancelAction 由 journal.onCancel 触发：设为 CANCELLED、中断虚拟线程、释放资源、关闭 SSE。
     // 显式取消任务；浏览器断开连接只关闭传输通道。
     private Runnable streamCancelAction = () -> state = AgentState.CANCELLED;// 显式取消任务,后面在runstream里会再次被赋值调用
     /*等同于,被Lambda表达式替换
@@ -79,6 +91,7 @@ public abstract class BaseAgent {
      * @param userPrompt 用户提示
      * @return 代理执行结果
      */
+    // 当前前端未使用此同步入口。
     public String run(String userPrompt) {
         validateStart(userPrompt);// 验证任务是否可以开始
         state = AgentState.RUNNING;
@@ -117,6 +130,7 @@ public abstract class BaseAgent {
      * @param userPrompt 用户提示
      * @return SSE 连接
      */
+    // 当前前端未使用此简化入口。
     public SseEmitter runStream(String userPrompt) {
         return runStream(userPrompt, emitter -> { }, () -> { });
     }
@@ -216,25 +230,22 @@ public abstract class BaseAgent {
                     currentStep = i + 1;
                     //log.info("Executing step {}/{}", currentStep, maxSteps);
 
-
-
-
                     String result = classifyResult(step());//判断当前步骤是中间步骤还是最终步骤
-
-
-
 
                     if (closed.get()) return;
 
                     saveMemory();//保存历史提示词与当前用户输入
                     if (closed.get()) return;
                     if (StrUtil.isNotBlank(result)) {//判断当前步骤是中间步骤还是最终步骤,如果是中间步骤,则发布事件到前端
-                        stepObserver.accept(currentStep, result);//
+
+                        // 发布中间步骤事件到前端messagesJson 会话记录
+                        stepObserver.accept(currentStep, result);
+
                         publish.accept(SseEmitter.event().data("Step " + currentStep + ": " + result, UTF8_TEXT));
                     }
                     if (closed.get()) return;
                     if (StrUtil.isNotBlank(finalAnswer)) {//如果是最终步骤,则发布事件到前端
-                        finalAnswerObserver.accept(finalAnswer);
+                        finalAnswerObserver.accept(finalAnswer);//写入前端 messagesJson 会话记录
                         publish.accept(SseEmitter.event().name("final_answer").data(finalAnswer, UTF8_TEXT));
                     }
                 }

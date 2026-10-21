@@ -42,15 +42,18 @@ import java.util.stream.IntStream;
 @Slf4j
 @Service
 public class ContextMemoryServiceImpl implements ContextMemoryService {
-    private final ContextMemoryProperties config;
+    private final ContextMemoryProperties contextMemoryProperties;
     private final ContextTokenEstimator contextTokenEstimator;//   计算 Token 占用
     private final HookContextSummaryGenerator summaries;
     private final Map<String, ChatMemoryRepository> chatMemoryRepositories;//记忆仓库
     private final Map<String, FileBasedChatMemoryRepository> backups;
     private final Map<String, ChatModel> models;
+    //overheads 的 key 确实只有 "love" 和 "manus"，因为它存的是应用级别的默认固定开销。真正区分不同会话的是 states 里的 ContextMemoryState.overheadTokens，
+    //overheads 是一个并发映射表，用于缓存应用级别的固定 Token 开销（系统提示 + 工具定义 + 控制提示）,应用名:固定 Token 开销
     private final Map<String, Integer> overheads = new ConcurrentHashMap<>();
 
-    private final Map<String, ContextMemoryState> states = new ConcurrentHashMap<>();//
+    private final Map<String, ContextMemoryState> states = new ConcurrentHashMap<>();// 会话状态
+    //executor 是虚拟线程池，负责在后台异步执行压缩任务，避免阻塞用户请求
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
 
     /**构造函数是初始化上下文记忆服务，绑定各应用的模型和记忆仓库，建立独立备份目录并预先校验 Token 预算。 */
@@ -64,7 +67,7 @@ public class ContextMemoryServiceImpl implements ContextMemoryService {
             HookContextSummaryGenerator summaries,
             @Value("${chat-memory.base-dir:${app.storage.base-dir:./tmp}/chat-memory}") String directory) {
 
-        this.config = contextMemoryconfig;
+        this.contextMemoryProperties = contextMemoryconfig;
         this.contextTokenEstimator = contextTokenEstimator;
         this.summaries = summaries;
         // 初始化记忆仓库
@@ -104,12 +107,17 @@ public class ContextMemoryServiceImpl implements ContextMemoryService {
                 app + ":" + chatId,
                 key -> {
                     ContextMemoryState value = new ContextMemoryState();
+
+                    // state里的overheadTokens 从overheads取
                     value.overheadTokens = overheads.getOrDefault(app, 12);// 获取该应用已登记的提示词和工具 Token 开销；未登记时使用基础估算值 12
+
                     var history = chatMemoryRepositories.get(app).findByConversationId(chatId);// 从持久化历史中获取会话记录
+
                     updateEstimate(value, history);// 更新估算占用
+
                     history.stream()//恢复压缩元数据
                             .filter(this::isSummary)// 只看标记为「压缩摘要」的消息
-                            .findFirst() // 找最近的一条（历史里可能只有一条）
+                            .findFirst() // 找第一条压缩摘要（如果有）
                             .ifPresent(
                                     message -> {
                                         //读取元数据对应key的数字字段,没有则返回0
@@ -134,16 +142,14 @@ public class ContextMemoryServiceImpl implements ContextMemoryService {
     private boolean isSummary(Message message) {
         return Boolean.TRUE.equals(message.getMetadata().get(SUMMARY));
     }
-
-    /** 登记应用默认的系统提示、工具定义与下一步提示所占 固定Token开销。 */
+    //登记整个应用的默认固定开销。
+    //registerProfile(app, system, tools, nextStepPrompt) 预计算并缓存应用级别的固定 Token 开销（系统提示 + 工具定义 + 控制提示），存到 overheads Map 中
     @Override
     public void registerProfile(String app, String system, ToolCallback[] tools, String nextStepPrompt) {
         overheads.put(app, contextTokenEstimator.computeOverheadTokens(system, tools) + contextTokenEstimator.text(nextStepPrompt));
     }
 
-    /** 在会话锁内用实际任务配置更新提示和工具开销，并同步估算占用开销。 */
-    /**
-     * 更新指定会话的提示和工具 Token 开销。
+    /** 用本轮实际配置更新指定会话。
      * @param app 应用名称
      * @param chatId 会话ID
      * @param systemPrompt 系统提示
@@ -153,13 +159,16 @@ public class ContextMemoryServiceImpl implements ContextMemoryService {
     @Override
     public void registerProfile(String app, String chatId, String systemPrompt, ToolCallback[] tools, String nextStepPrompt) {
         ContextMemoryState contextMemoryState = state(app, chatId);
-        // 计算新配置的开销
+
+        // 计算本轮新配置的开销
         int overhead = contextTokenEstimator.computeOverheadTokens(systemPrompt, tools) + contextTokenEstimator.text(nextStepPrompt);
+
         contextMemoryState.lock.lock();
         try {
             requireAvailable(contextMemoryState);
+            // 更新估算占用,历史记忆开销+本来的固定开销-历史的固定开销,(因为历史记忆中存在固定开销,所以要减去历史的固定开销)
             contextMemoryState.estimatedTokens = Math.max(0, contextMemoryState.estimatedTokens + overhead - contextMemoryState.overheadTokens);
-            contextMemoryState.overheadTokens = overhead;
+            contextMemoryState.overheadTokens = overhead;// 更新,新的固定开销
         } finally {
             contextMemoryState.lock.unlock();
         }
@@ -168,17 +177,16 @@ public class ContextMemoryServiceImpl implements ContextMemoryService {
     /** 过滤只供模型执行控制使用的内部提示，保留实际用户、模型与工具消息。 */
     private List<Message> clean(List<Message> messages) {
         return messages.stream()
-                .filter(message -> !Boolean.TRUE.equals(message.getMetadata().get(INTERNAL)))
+                .filter(message -> !Boolean.TRUE.equals(message.getMetadata().get(INTERNAL)))// 压缩前过滤内部提示
                 .toList();
     }
 
-    /** 合计历史消息和提示开销，更新估算 Token 数并防止整数溢出。 */
+    /** 合计历史消息和提示开销，更新估算总 Token 数并防止整数溢出。 */
     private void updateEstimate(ContextMemoryState state, List<Message> messages) {
-        state.estimatedTokens =
-                (int) Math.min(Integer.MAX_VALUE,(long) state.overheadTokens + contextTokenEstimator.computeMessagesTokens(messages));// 更新估算占用
+        state.estimatedTokens = (int) Math.min(Integer.MAX_VALUE,(long) state.overheadTokens + contextTokenEstimator.computeMessagesTokens(messages));// 更新估算占用
     }
 
-    /** 在会话锁内独占上下文并恢复历史；已删除或已被占用时拒绝打开。 */
+   //声明“这一轮任务要使用这份上下文”，并读取历史。
     @Override
     public List<Message> open(String app, String chatId) {
         ContextMemoryState state = state(app, chatId);//获取会话状态
@@ -187,7 +195,7 @@ public class ContextMemoryServiceImpl implements ContextMemoryService {
             requireAvailable(state);
             ThrowUtils.throwIf(state.running, ErrorCode.CONFLICT_ERROR, "该会话已有任务在使用上下文");
             state.running = true;
-            //
+            //读取并返回历史
             return new ArrayList<>(chatMemoryRepositories.get(app).findByConversationId(chatId));
         } finally {
             state.lock.unlock();
@@ -200,24 +208,27 @@ public class ContextMemoryServiceImpl implements ContextMemoryService {
         ContextMemoryState state = state(app, id);
         state.lock.lock();
         try {
+            //1. 重新估算占用
             requireAvailable(state);
             var history = new ArrayList<>(clean(messages));
-            updateEstimate(state, history);
-            var prepared =
-                    needsCompression(app, state) ? compact(app, id, state, history) : history;
+            updateEstimate(state, history);// 更新本次估算占用
+
+            //2. 判断是否需要压缩
+            // 如果估算占用超过预算，需要压缩历史, 否则直接返回历史历史
+            List<Message> prepared = needsCompression(app, state) ? compact(app, id, state, history) : history;
             // 成功压缩已由 compact 保存，普通请求和未压缩的历史在这里保存一次。
+            // 3.保存本次有效历史,如果是未压缩的历史，需要保存到 kryo 文件
             if (prepared == history) chatMemoryRepositories.get(app).saveAll(id, history);
-            ThrowUtils.throwIf(
-                    config.isEnabled() && state.estimatedTokens > config.budget(app).inputBudget(),
-                    ErrorCode.PARAMS_ERROR,
-                    "上下文超过配置预算，暂时无法安全压缩；请减少本次输入或调整上下文预算");
+            //4.检查是否仍超过输入预算
+            ThrowUtils.throwIf(contextMemoryProperties.isEnabled() && state.estimatedTokens > contextMemoryProperties.budget(app).inputBudget(), ErrorCode.PARAMS_ERROR, "上下文超过配置预算，暂时无法安全压缩；请减少本次输入或调整上下文预算");
+            //5.返回模型应该使用的历史
             return prepared;
         } finally {
             state.lock.unlock();
         }
     }
 
-    /** 在会话锁内过滤控制消息、覆盖保存历史并更新占用；忽略删除后的迟到写入。 */
+    /** 用传进来的完整历史覆盖保存。。 */
     @Override
     public void save(String app, String id, List<Message> messages) {
         ContextMemoryState state = state(app, id);
@@ -225,30 +236,31 @@ public class ContextMemoryServiceImpl implements ContextMemoryService {
         try {
             if (state.deleted) return;
             var history = clean(messages);
+            //是把过滤后的消息历史全量写入对应应用（love/manus）的 kryo 文件，实现 AI 推理上下文的持久化。
             chatMemoryRepositories.get(app).saveAll(id, history);
-            updateEstimate(state, history);
+            updateEstimate(state, history);// 更新估算占用
         } finally {
             state.lock.unlock();
         }
     }
 
-    /** 在会话锁内追加消息并更新占用；已删除会话不再写入。 */
+    /** 只提供新增消息，由这里读取旧历史再追加。 */
     @Override
-    public void append(String app, String id, List<Message> additions) {
-        ContextMemoryState state = state(app, id);
+    public void append(String app, String chatId, List<Message> additions) {
+        ContextMemoryState state = state(app, chatId);
         state.lock.lock();
         try {
             if (state.deleted) return;
-            var history = new ArrayList<>(chatMemoryRepositories.get(app).findByConversationId(id));
-            history.addAll(additions);
-            chatMemoryRepositories.get(app).saveAll(id, history);
-            updateEstimate(state, history);
+            var history = new ArrayList<>(chatMemoryRepositories.get(app).findByConversationId(chatId));
+            history.addAll(additions);// 追加新消息到历史记录
+            chatMemoryRepositories.get(app).saveAll(chatId, history);//持久化历史记录
+            updateEstimate(state, history);// 更新估算占用
         } finally {
             state.lock.unlock();
         }
     }
 
-    /** 释放上下文占用，必要时安排后台压缩；已删除会话不再调度任务。 */
+    /** 结束本轮占用，并检查是否需要后台压缩。 */
     @Override
     public void close(String app, String id) {
         ContextMemoryState state = state(app, id);
@@ -256,29 +268,34 @@ public class ContextMemoryServiceImpl implements ContextMemoryService {
         try {
             state.running = false;
             if (state.deleted) return;
+            // 如果估算占用超过预算，需要压缩历史, 否则直接返回历史历史
             if (needsCompression(app, state)) schedule(app, id, state);
         } finally {
             state.lock.unlock();
         }
     }
 
-    /** 登记一次手动压缩请求；运行中等待安全位置，空闲时调度后台执行。 */
+    /** 记录用户点击的手动压缩请求。 */
     @Override
-    public ContextUsageView request(String app, String id) {
-        ContextMemoryState state = state(app, id);
-        if (!config.isEnabled()) return usage(app, id);
+    public ContextUsageView request(String app, String chatId) {
+        ContextMemoryState state = state(app, chatId);
+        if (!contextMemoryProperties.isEnabled()) return usage(app, chatId);// 如果上下文压缩功能未开启，直接返回当前占用
         synchronized (state) {
             requireAvailable(state);
-            if (state.requested || "compressing".equals(state.phase)) return usage(app, id);
+            // 如果当前正在压缩或已请求压缩，直接返回当前占用
+            if (state.requested || "compressing".equals(state.phase)) return usage(app, chatId);
+            // 记录用户点击的手动压缩请求
             state.requested = true;
+            // 如果当前模型任务正在使用上下文，等待安全位置压缩
             state.phase = "queued";
             state.message = state.running ? "已安排在下一个安全位置压缩" : "正在准备压缩上下文";
         }
-        if (!state.running) schedule(app, id, state);
-        return usage(app, id);
+        //立即安排后台任务 schedule()压缩
+        if (!state.running) schedule(app, chatId, state);
+        return usage(app, chatId);// 返回当前占用
     }
 
-    /** 为同一上下文最多登记一个后台压缩任务，取得锁后再次检查执行和删除状态。 */
+    //安排空闲会话的后台压缩。
     private void schedule(String app, String id, ContextMemoryState state) {
         if (state.deleted || !state.scheduled.compareAndSet(false, true)) return;
         state.phase = "queued";
@@ -288,8 +305,11 @@ public class ContextMemoryServiceImpl implements ContextMemoryService {
                     state.lock.lock();
                     try {
                         if (state.deleted || state.running) return;
+                        // 读取当前历史记录
                         var history = chatMemoryRepositories.get(app).findByConversationId(id);
-                        updateEstimate(state, history);
+                        updateEstimate(state, history);//计算当前估算占用给state
+
+                        // 如果估算占用超过预算，需要压缩历史, 否则直接返回历史历史
                         if (needsCompression(app, state)) compact(app, id, state, history);
                     } finally {
                         state.lock.unlock();
@@ -304,33 +324,53 @@ public class ContextMemoryServiceImpl implements ContextMemoryService {
 
     /** 综合启用状态、手动请求、自动阈值和失败重试时间判断是否需要压缩。 */
     private boolean needsCompression(String app, ContextMemoryState state) {
+        /*
+        会话未删除
+        并且压缩总开关开启
+        并且满足下面之一：
+
+        ① 有手动压缩请求
+
+        ② 自动压缩开启
+           并且自动重试冷却已结束
+           并且占用达到阈值
+         */
         return !state.deleted
-                && config.isEnabled()
+                && contextMemoryProperties.isEnabled()
                 && (state.requested
-                        || config.isAutoEnabled()
+                        || contextMemoryProperties.isAutoEnabled()
                                 && System.currentTimeMillis() >= state.retryAfter
                                 && state.estimatedTokens
-                                        >= config.budget(app).inputBudget()
-                                                * config.getThreshold());
+                                        >= contextMemoryProperties.budget(app).inputBudget()
+                                                * contextMemoryProperties.getThreshold());
     }
 
-    /** 按近期轮数及 Token 预算选择工具调用闭合的截断边界，长智能体任务可压缩已完成步骤。 */
+    //决定从哪里把历史切成两部分。
     private int cutoff(String app, ContextMemoryState state, List<Message> history) {
         List<Integer> turns =
-                IntStream.range(0, history.size())
-                        .filter(index -> history.get(index) instanceof UserMessage)
+                IntStream.range(0, history.size())// 过滤出用户消息的索引
+                        .filter(index -> history.get(index) instanceof UserMessage)// 过滤出用户消息的索引
                         .boxed()
                         .toList();
         if (turns.isEmpty()) return 0;
-        List<Integer> safe = safeCutoffs(history);
-        int keep = Math.min(config.getRetainTurns(), turns.size());
-        int cut = turns.get(turns.size() - keep);
-        int limit = (int) (config.budget(app).inputBudget() * config.getThreshold());
+
+        List<Integer> safe = safeCutoffs(history);//找出不会拆开工具请求与结果的位置。即找到纯用户消息/助手消息的索引,工具调用对闭合的位置。
+
+        int keep = Math.min(contextMemoryProperties.getRetainTurns(), turns.size());// 计算需要保留的轮数
+        int cut = turns.get(turns.size() - keep);// 计算压缩位置
+        //计算压缩位置的占用占用是否超过阈值
+        int limit = (int) (contextMemoryProperties.budget(app).inputBudget() * contextMemoryProperties.getThreshold());
+        // 计算压缩位置的占用占用是否超过阈值
+        /*
+        这段循环逐步减少保留的对话轮数（keep--），切割点后移到下一个用户消息位置（cut 跳到 turns 中的下一个索引），
+        直到保留的 token 降到阈值以下。keep > 1 保证至少保留最新一轮用户消息。
+         */
         while (keep > 1 && retainedTokens(state, history, cut) >= limit) {
             keep--;
-            cut = turns.get(turns.size() - keep);
+            cut = turns.get(turns.size() - keep);//压缩点+1
         }
-        int selected = cut;
+        int selected = cut;// 记录压缩位置
+        // 找到最近的安全位置
         cut =
                 safe.stream()
                         .filter(index -> index <= selected)
@@ -338,8 +378,10 @@ public class ContextMemoryServiceImpl implements ContextMemoryService {
                         .max()
                         .orElse(0);
         // 一个长智能体任务也可压缩已经完成的步骤，保留最新一步或尚未完成的工具链。
+        //当普通策略保留的 token 仍超限时，遍历安全切割点，
+        // 把更多已完成的旧步骤压缩成摘要，只保留最新的用户消息和未完成的工具链，直到 token 降到目标值以下。
         if ("manus".equals(app) && retainedTokens(state, history, cut) >= limit) {
-            int target = (int) (config.budget(app).inputBudget() * config.getTargetRatio());
+            int target = (int) (contextMemoryProperties.budget(app).inputBudget() * contextMemoryProperties.getTargetRatio());
             int latestUserTokens = contextTokenEstimator.computeMessagesTokens(List.of(history.get(turns.getLast())));
             for (int candidate : safe) {
                 if (candidate <= cut) continue;
@@ -350,15 +392,19 @@ public class ContextMemoryServiceImpl implements ContextMemoryService {
         return cut;
     }
 
-    /** 扫描没有待返回工具调用的边界，避免将工具请求与对应结果拆开。 */
+    /**找出不会拆开工具请求与结果的位置。  List<Integer> safe = safeCutoffs(history);//找出不会拆开工具请求与结果的位置。即找到纯用户消息/助手消息的索引。 */
     private List<Integer> safeCutoffs(List<Message> history) {
         List<Integer> safe = new ArrayList<>(List.of(0));
         Set<String> pending = new HashSet<>();
+
         for (int i = 0; i < history.size(); i++) {
             Message message = history.get(i);
+            // 如果是助手消息，记录工具调用 ID
             if (message instanceof AssistantMessage assistant) {
+                // 记录助手消息中的工具调用 ID
                 for (var call : assistant.getToolCalls()) pending.add(call.id());
             }
+            // 如果是工具响应消息，移除对应的工具调用 ID
             if (message instanceof ToolResponseMessage response) {
                 for (var result : response.getResponses()) pending.remove(result.id());
             }
@@ -367,20 +413,22 @@ public class ContextMemoryServiceImpl implements ContextMemoryService {
         return safe;
     }
 
-    /** 估算保留区域、摘要以及系统和工具定义的总 Token 开销。 */
+    /** 提前估算保留方案是否太大。 */
     private int retainedTokens(ContextMemoryState state, List<Message> history, int cut) {
-        return state.overheadTokens
-                + contextTokenEstimator.computeMessagesTokens(history.subList(cut, history.size()))
-                + config.getSummaryMaxTokens();
+        return state.overheadTokens//固定成本
+                + contextTokenEstimator.computeMessagesTokens(history.subList(cut, history.size()))// 切点之后的原文占用
+                + contextMemoryProperties.getSummaryMaxTokens();//新的摘要最大 token 数
     }
 
     /** 生成摘要，确认占用减少后备份原历史并保存新历史；失败时保留原记忆并延后重试。 */
     private List<Message> compact(
             String app, String id, ContextMemoryState state, List<Message> history) {
+        //1.选择切点。
         int cut = cutoff(app, state, history);
         boolean manual;
         synchronized (state) {
             manual = state.requested;
+            //2.消费掉手动请求。
             state.requested = false;
             state.phase = cut == 0 ? "noop" : "compressing";
         }
@@ -391,8 +439,9 @@ public class ContextMemoryServiceImpl implements ContextMemoryService {
         }
         state.phase = "compressing";
         state.message = "正在生成历史摘要，完整聊天记录仍保留";
-        int before = state.estimatedTokens;
+        int before = state.estimatedTokens;//压缩前的占用
         try {
+            //3.取出准备摘要的旧消息。
             var older =
                     history.subList(0, cut).stream()
                             .filter(message -> !(message instanceof SystemMessage))
@@ -402,24 +451,30 @@ public class ContextMemoryServiceImpl implements ContextMemoryService {
                 state.message = "暂无需要压缩的历史";
                 return history;
             }
+            //5.调用摘要生成器。利用 HookContextSummaryGenerator 生成摘要。
             String summary =
                     summaries.summarize(
                             models.get(app),
-                            contextTokenEstimator.transcript(older),
-                            config.budget(app).inputBudget(),
-                            config.getSummaryMaxTokens());
+                            contextTokenEstimator.transcript(older),//4.把消息转换成摘要模型能阅读的文字。
+                            contextMemoryProperties.budget(app).inputBudget(),//摘要输入预算 725000
+                            contextMemoryProperties.getSummaryMaxTokens());//摘要最大 token 数40960
+            //6.创建摘要消息，组合新历史
             var summaryMessage = summaryMessage(summary, state, before);
+
             List<Message> result = compactedHistory(history, cut, summaryMessage);
+            //7.确认占用减少。计算压缩后的占用。
             int after = contextTokenEstimator.computeMessagesTokens(result) + state.overheadTokens;
             if (after >= before) {
                 state.phase = "noop";
                 state.message = "摘要未减少占用，已保留原上下文";
                 return history;
             }
+            //8.备份原历史。
             summaryMessage.getMetadata().put("afterTokens", after);
             // 摘要调用可能耗时较长，删除已发出时不要再生成备份或写入压缩结果。
             if (state.deleted) return history;
             backups.get(app).saveAll(id + "_" + UUID.randomUUID(), history);
+            //9.更新压缩状态。
             chatMemoryRepositories.get(app).saveAll(id, result);
             state.count++;
             state.lastCompactedAt = number(summaryMessage, "compactedAt");
@@ -439,7 +494,7 @@ public class ContextMemoryServiceImpl implements ContextMemoryService {
         }
     }
 
-    /** 创建带修订号、时间和压缩前占用的摘要消息，供重启后恢复状态。 */
+    /** 把摘要文字包装成一条可识别的消息。*/
     private AssistantMessage summaryMessage(String summary, ContextMemoryState state, int before) {
         var message =
                 AssistantMessage.builder().content("【历史记忆摘要；仅供参考，以用户当前要求为准】\n" + summary).build();
@@ -450,63 +505,63 @@ public class ContextMemoryServiceImpl implements ContextMemoryService {
         return message;
     }
 
-    /** 组合旧系统消息、摘要和近期原文，被压缩区域内的最新用户目标也以原文保留。 */
-    private List<Message> compactedHistory(
-            List<Message> history, int cut, AssistantMessage summary) {
+    /** 组装最终要保存的新列表。系统+摘要+近期原文。被压缩区域内的最新用户目标也以原文保留。*/
+    private List<Message> compactedHistory(List<Message> history, int cut, AssistantMessage summary) {
+
         List<Message> result =
                 new ArrayList<>(
                         history.subList(0, cut).stream()
-                                .filter(SystemMessage.class::isInstance)
+                                .filter(SystemMessage.class::isInstance)//只保留 SystemMessage，其他全过滤掉
                                 .toList());
+
         result.add(summary);
         Message latestUser =
                 history.stream()
                         .filter(UserMessage.class::isInstance)
-                        .reduce((first, second) -> second)
+                        .reduce((first, second) -> second)//取最新的用户消息。作用：确保压缩后的历史包含最新的用户目标。
                         .orElse(null);
-        List<Message> recent = history.subList(cut, history.size());
+        List<Message> recent = history.subList(cut, history.size());//获取切点后的消息。
         if (latestUser != null && !recent.contains(latestUser)) result.add(latestUser);
         result.addAll(recent);
         return result;
     }
 
-    /** 返回估算占用、配置预算及压缩状态，不返回模型记忆的具体内容。 */
+    /** 把占用和压缩状态整理给前端。 */
     @Override
     public ContextUsageView usage(String app, String id) {
         ContextMemoryState state = state(app, id);
         requireAvailable(state);
-        var budget = config.budget(app);
+        var budget = contextMemoryProperties.budget(app);
         return new ContextUsageView(
-                config.isEnabled(),
+                contextMemoryProperties.isEnabled(),
                 true,
-                state.estimatedTokens,
-                budget.getContextWindowTokens(),
-                budget.getResponseReserveTokens(),
-                budget.inputBudget(),
-                Math.round(state.estimatedTokens * 1000.0 / budget.inputBudget()) / 10.0,
-                config.isAutoEnabled(),
-                config.getThreshold() * 100,
-                config.getRetainTurns(),
-                state.phase,
-                state.lastCompactedAt,
-                state.before,
-                state.after,
-                state.count,
-                state.message);
+                state.estimatedTokens,//当前总成本
+                budget.getContextWindowTokens(),//上下文窗口大小
+                budget.getResponseReserveTokens(),//响应预留令牌
+                budget.inputBudget(),//输入预算
+                Math.round(state.estimatedTokens * 1000.0 / budget.inputBudget()) / 10.0,//占用占比
+                contextMemoryProperties.isAutoEnabled(),//是否自动压缩
+                contextMemoryProperties.getThreshold() * 100,//压缩阈值
+                contextMemoryProperties.getRetainTurns(),//保留轮数
+                state.phase,//当前状态
+                state.lastCompactedAt,//最近一次压缩时间
+                state.before,//压缩前占用
+                state.after,//压缩后占用
+                state.count,//压缩次数
+                state.message);//压缩状态描述
     }
 
-    /** 拒绝访问已有删除标记的会话上下文。 */
+    /** 拒绝访问已经删除的会话。 */
     private void requireAvailable(ContextMemoryState state) {
         ThrowUtils.throwIf(state.deleted, ErrorCode.NOT_FOUND_ERROR, "对话不存在或已删除");
     }
 
-    /** 先设置删除标记阻止迟到写入，再在会话锁内清理记忆与摘要备份，兼容损坏文件。 */
+    /** 删除模型记忆和压缩备份，并阻止迟到写入。 */
     @Override
     public void delete(String app, String id) {
         validateKey(app, id);
         // 删除不读取文件内容，因此损坏的 Kryo 文件也能清理。
-        ContextMemoryState state =
-                states.computeIfAbsent(app + ":" + id, key -> new ContextMemoryState());
+        ContextMemoryState state = states.computeIfAbsent(app + ":" + id, key -> new ContextMemoryState());
         // 墓碑在锁外先置位；等待中的模型回调和异步压缩在拿到锁后都会放弃写入。
         // 本进程保留墓碑，避免迟到的回调创建新 ContextMemoryState 后复活文件。
         state.deleted = true;
@@ -514,8 +569,8 @@ public class ContextMemoryServiceImpl implements ContextMemoryService {
         try {
             state.requested = false;
             state.running = false;
-            chatMemoryRepositories.get(app).deleteByConversationId(id);
-            backups.get(app).deleteCompactionBackups(id);
+            chatMemoryRepositories.get(app).deleteByConversationId(id);//删除模型记忆
+            backups.get(app).deleteCompactionBackups(id);//删除压缩备份
         } finally {
             state.lock.unlock();
         }

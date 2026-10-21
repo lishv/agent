@@ -36,7 +36,7 @@ public interface ContextMemoryService {
     void save(String app, String id, List<Message> messages);
 
     /** 在持久化历史末尾追加消息并更新估算占用，已删除会话忽略写入。 */
-    void append(String app, String id, List<Message> additions);
+    void append(String app, String chatId, List<Message> additions);
 
     /** 释放上下文使用状态，必要时安排后台摘要压缩。 */
     void close(String app, String id);

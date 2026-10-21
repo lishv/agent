@@ -64,15 +64,20 @@ public class ManusRunServiceImpl implements ManusRunService {
 
 
     /** 注入上下文服务，并登记默认系统提示和工具开销，使空闲会话也能估算占用。 */
+    /**
+     * 配置上下文服务，登记默认系统提示和工具开销，使空闲会话也能估算占用。
+     * @param contexts 上下文服务
+     * @param manus 智能体配置
+     */
     @Autowired
-    public void configureContexts(ContextMemoryService contexts, MyManus profile) {
+    public void configureContexts(ContextMemoryService contexts, MyManus manus) {
         this.contextMemoryService = contexts;
         // 空闲会话也计入模型系统提示和现有工具定义；运行时使用该任务的完整工具集重新校准。
         contexts.registerProfile(
                 "manus",
-                profile.getSystemPrompt(),
-                profile.getAvailableTools(),
-                profile.getNextStepPrompt());
+                manus.getSystemPrompt(),
+                manus.getAvailableTools(),
+                manus.getNextStepPrompt());
     }
 
     /** 绑定模型、工具、记忆仓库和追问超时设置；每轮任务另建独立智能体。 */
@@ -219,9 +224,8 @@ public class ManusRunServiceImpl implements ManusRunService {
         synchronized (agent) {
             if (activeChats.get(chatId) != agent) return;
             // 过滤用户消息和下一步提示,只保存智能体回答
-            var history = messages.stream().filter(item ->!(item instanceof UserMessage)|| !agent.getNextStepPrompt().equals(item.getText()))
-                                            .toList();
-            if (contextMemoryService != null) contextMemoryService.save("manus", chatId, history);
+            var history = messages.stream().filter(item ->!(item instanceof UserMessage)|| !agent.getNextStepPrompt().equals(item.getText())).toList();
+            if (contextMemoryService != null) contextMemoryService.save("manus", chatId, history);// 保存上下文服务的会话记录
             else memoryRepository.saveAll(chatId, history);
         }
     }
@@ -280,9 +284,10 @@ public class ManusRunServiceImpl implements ManusRunService {
             MyManus agent,
             HumanInteractionSession interaction,
             AtomicBoolean contextOpened) {
-        interaction.close();
-        interactions.remove(runId, interaction);
-        owners.remove(runId, userId);
+        interaction.close();//关闭追问会话，中断可能正在等待用户回答的 CompletableFuture
+        interactions.remove(runId, interaction);//防止后续 answer() 再向已关闭的会话提交答案
+        owners.remove(runId, userId);//防止后续 cancel()/answer() 的权限校验误通过
+        // 清除运行登记，释放 runId 槽位和 chatId 会话锁。
         runs.remove(runId, agent);
         synchronized (agent) {
             activeChats.remove(chatId, agent);

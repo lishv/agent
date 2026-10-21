@@ -15,7 +15,7 @@ public class AiHttpClientConfig {
     @Bean
     public RestClientCustomizer aiRestClientCustomizer(
             @Value("${ai.http.connect-timeout-seconds:30}") long connectSeconds,
-            @Value("${ai.http.read-timeout-seconds:180}") long readSeconds) {
+            @Value("${ai.http.read-timeout-seconds:600}") long readSeconds) {
         var client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1)
                 .connectTimeout(Duration.ofSeconds(connectSeconds)).build();
         var factory = new JdkClientHttpRequestFactory(client);

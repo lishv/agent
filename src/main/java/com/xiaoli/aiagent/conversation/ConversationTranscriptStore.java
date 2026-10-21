@@ -76,7 +76,7 @@ public final class ConversationTranscriptStore {
     /**
      * 将消息写入已校验的目标路径；优先原子替换，不支持时退回普通替换。
      */
-    public void write(Path target, List<ObjectNode> messages) throws IOException {
+    public void writeToJson(Path target, List<ObjectNode> messages) throws IOException {
         Files.createDirectories(target.getParent());
         Path temp = Files.createTempFile(target.getParent(), ".transcript-", ".tmp");
         try {

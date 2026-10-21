@@ -121,12 +121,15 @@ public class ConversationServiceImpl extends ServiceImpl<ChatSessionMapper, Chat
 
     /** 校验输入后串行创建或恢复会话，登记本轮记录器并持久化用户消息。 */
     @Override
-    public Journal begin(Long userId, String appId, String requestedId, String message) {
+    public Journal createOrRestoreJournal(Long userId, String appId, String requestedId, String message) {
         //验证是love或manus应用的id
         validateApp(appId);
+
         ThrowUtils.throwIf(message == null || message.isBlank() || message.length() > ChatConstant.MAX_INPUT_LENGTH, ErrorCode.PARAMS_ERROR, "请输入 1 到 " + ChatConstant.MAX_INPUT_LENGTH + " 个字符");
+
         String conversationId = requestedId == null ? UUID.randomUUID().toString() : requestedId;// 会话id,若未指定则自动生成
         ThrowUtils.throwIf(!conversationId.matches("[A-Za-z0-9_-]{1,64}"), ErrorCode.PARAMS_ERROR, "会话 ID 格式不正确");
+
         synchronized (sessionLock(conversationId)) {
             // 从数据库获取会话的元数据
             ChatSession row = findOrCreate(userId, appId, conversationId, message.trim());
@@ -138,14 +141,14 @@ public class ConversationServiceImpl extends ServiceImpl<ChatSessionMapper, Chat
                             json,
                             transcripts,
                             this::touchSession,
-                            closed -> active.remove(row.getId(), closed));
+                            closed -> active.remove(row.getId(), closed));//一个回调方法,用于在会话关闭时,从active中移除该会话
             //即如果active中已存在该会话,则说明该会话正在回答,则抛出异常,提示稍候再试,若无则创建新记录
             ThrowUtils.throwIf(active.putIfAbsent(conversationId, journal) != null, ErrorCode.CONFLICT_ERROR, "这段对话正在回答，请稍候");
             try {
-                journal.addUser(message.trim(), false);
+                journal.addUser(message.trim(), false);//json文件中添加用户消息,answer为false,则这是用户主动发起的对话,此外message为用户输入的消息
                 return journal;
             } catch (RuntimeException e) {
-                active.remove(conversationId, journal);
+                active.remove(conversationId, journal);//报错时,则从active中移除该会话,则说明该会话已关闭话
                 throw e;
             }
         }
@@ -251,7 +254,7 @@ public class ConversationServiceImpl extends ServiceImpl<ChatSessionMapper, Chat
     /** 校验会话归属后取消正在运行的记录器；不存在运行任务时返回 false。 */
     @Override
     public boolean cancel(Long userId, String id) {
-        own(userId, id, null);
+        own(userId, id, null);//校验会话归属
         Journal journal = active.get(id);
         if (journal == null) return false;
         journal.cancel();

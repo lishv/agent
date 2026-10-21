@@ -16,11 +16,13 @@ final class ContextMemoryState {
     volatile int estimatedTokens;//estimatedTokens 是"当前总成本"（固定成本 + 历史对话）。分开存是为了换工具时只改固定成本的部分，不用重算整个历史
     volatile int overheadTokens;//overheadTokens 是"固定成本"（系统/工具/控制提示，每次都要带）
     volatile String phase = "idle";
-    volatile String message = "";
+
+
     // 最近一次压缩的次数、时间、重试时间与前后占用，供前端展示和重启恢复。
     volatile long count;
     volatile long lastCompactedAt;
     volatile long retryAfter;
     volatile int before;
     volatile int after;
+    volatile String message = "";//人类可读中文描述」（比如"正在生成历史摘要..."、"自动压缩完成..."）
 }

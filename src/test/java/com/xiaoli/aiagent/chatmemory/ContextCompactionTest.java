@@ -204,7 +204,7 @@ class ContextCompactionTest {
     @Test void systemAndToolDefinitionsAreIncludedInEstimatedOccupancy() {
         memory.registerProfile("manus", "系统提示".repeat(100), new org.springframework.ai.tool.ToolCallback[0], "步骤指引".repeat(100));
         var history = List.<Message>of(new UserMessage("短内容")); memory.save("manus", "101_tokens", history);
-        assertTrue(memory.usage("manus", "101_tokens").estimatedTokens() > tokens.messages(history));
+        assertTrue(memory.usage("manus", "101_tokens").estimatedTokens() > tokens.computeMessagesTokens(history));
         assertTrue(memory.usage("manus", "101_tokens").estimated());
     }
     @Test void activeSessionProfilesDoNotChangeOtherSessionsTokenOccupancy() {

@@ -54,15 +54,15 @@ public class LoveApp {
     private ChatClient chatClient;
     private static final String SYSTEM_PROMPT = LoveAppPrompts.SYSTEM;
 
-    public LoveApp(@Qualifier("dashScopeChatModel") ChatModel dashScopeChatModel, ContextMemoryService contextMemory) {
+    public LoveApp(@Qualifier("openAiChatModel") ChatModel openAiChatModel, ContextMemoryService contextMemory) {
 
         contextMemory.registerProfile("love", SYSTEM_PROMPT, new ToolCallback[0], "");
 
         // 构建 ChatClient,在用户调用时需要 .advisors(a -> a.param(ChatMemory.CONVERSATION_ID, conversationId)) 来指定对话 ID
-        chatClient = ChatClient.builder(dashScopeChatModel)
+        chatClient = ChatClient.builder(openAiChatModel)
                 .defaultSystem(SYSTEM_PROMPT)
                 .defaultAdvisors(
-                        new CompactingMemoryAdvisor(contextMemory),
+                        new CompactingMemoryAdvisor(contextMemory), //压缩记忆 Advisor，用于压缩上下文记忆，避免内存泄漏。
                         // 自定义日志 Advisor，可按需开启
                         new MyLoggerAdvisor()
                         // 自定义推理增强 Advisor，可按需开启
@@ -255,7 +255,7 @@ public class LoveApp {
     }
     /**
      * AI 基础对话（支持多轮对话记忆，SSE 流式传输）
-     *
+     *目前没用
      * @param message 用户文本
      * @param chatId  对话 ID
      * @return  流式传输的 AI 回复内容
@@ -266,17 +266,18 @@ public class LoveApp {
 
     /**
      * 使用服务端提供的用户和任务上下文执行流式对话，使文件工具能够校验归属并生成下载链接。
-     *
+     *本页代码除了这个方法和构造方法，其他方法都是暂未实现。
      * @param message 用户消息
      * @param chatId 模型记忆标识
      * @param toolContext 由业务服务注入的工具上下文，不作为模型工具参数
      * @return 流式回复
      */
+
     public Flux<String> doChatByStream(String message, String chatId, Map<String, Object> toolContext) {
         ToolCallback[] mcpTools = toolCallbackProvider.getToolCallbacks();
         log.debug("恋爱助手可用 MCP 工具：{}", Arrays.stream(mcpTools)
                 .map(tool -> tool.getToolDefinition().name()).toList());
-        ToolCallback[] tools = AiToolCallbacks.merge(allTools, mcpTools);
+        ToolCallback[] tools = AiToolCallbacks.merge(allTools, mcpTools);//合并所有工具+mcp工具
         return chatClient
                 .prompt()
                 .user(message)

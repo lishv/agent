@@ -7,7 +7,6 @@ import com.xiaoli.aiagent.service.impl.*;
 import com.xiaoli.aiagent.agent.BaseAgent;
 import com.xiaoli.aiagent.agent.model.AgentState;
 import com.xiaoli.aiagent.app.LoveApp;
-import com.xiaoli.aiagent.service.ChatApplicationService;
 import com.xiaoli.aiagent.service.ConversationService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -34,7 +33,7 @@ class BackgroundExecutionTest {
         var love = mock(LoveApp.class);
         var conversations = mock(ConversationService.class);
         var journal = mock(Journal.class);
-        when(conversations.begin(1L, "love", "cancel-love", "继续回答")).thenReturn(journal);
+        when(conversations.createOrRestoreJournal(1L, "love", "cancel-love", "继续回答")).thenReturn(journal);
         when(journal.memoryId()).thenReturn("1_cancel-love");
         var cancel = new AtomicReference<Runnable>();
         doAnswer(call -> { cancel.set(call.getArgument(0)); return null; }).when(journal).onCancel(any());
@@ -57,7 +56,7 @@ class BackgroundExecutionTest {
         var love = mock(LoveApp.class);
         var conversations = mock(ConversationService.class);
         var journal = mock(Journal.class);
-        when(conversations.begin(1L, "love", "background-love", "你好")).thenReturn(journal);
+        when(conversations.createOrRestoreJournal(1L, "love", "background-love", "你好")).thenReturn(journal);
         when(journal.memoryId()).thenReturn("1_background-love");
         var source = new AtomicReference<FluxSink<String>>();
         when(love.doChatByStream(eq("你好"), eq("1_background-love"), anyMap())).thenReturn(Flux.create(source::set));

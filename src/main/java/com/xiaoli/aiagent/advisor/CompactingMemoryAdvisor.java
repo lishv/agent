@@ -18,8 +18,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class CompactingMemoryAdvisor implements BaseAdvisor {
     private final ContextMemoryService memory;
     public CompactingMemoryAdvisor(ContextMemoryService memory) { this.memory = memory; }
+
+
     @Override public int getOrder() { return Ordered.HIGHEST_PRECEDENCE + 1000; }
     private String id(ChatClientRequest request) { return (String) request.context().get(ChatMemory.CONVERSATION_ID); }
+
+
     @Override public ChatClientRequest before(ChatClientRequest request, AdvisorChain chain) {
         String id = id(request);
         var systems = request.prompt().getInstructions().stream().filter(SystemMessage.class::isInstance).toList();
@@ -35,6 +39,7 @@ public class CompactingMemoryAdvisor implements BaseAdvisor {
         } catch (RuntimeException error) { memory.close("love", id); throw error; }
     }
 
+
     @Override public ChatClientResponse after(ChatClientResponse response, AdvisorChain chain) {
         if (response.chatResponse() != null) {
             memory.append("love", (String) response.context().get(ChatMemory.CONVERSATION_ID),
@@ -42,6 +47,7 @@ public class CompactingMemoryAdvisor implements BaseAdvisor {
         }
         return response;
     }
+
     @Override public ChatClientResponse adviseCall(ChatClientRequest request, CallAdvisorChain chain) {
         boolean opened = false;
         try {
@@ -49,6 +55,8 @@ public class CompactingMemoryAdvisor implements BaseAdvisor {
             return after(chain.nextCall(prepared), chain);
         } finally { if (opened) memory.close("love", id(request)); }
     }
+
+
     @Override public Flux<ChatClientResponse> adviseStream(ChatClientRequest request, StreamAdvisorChain chain) {
         var opened = new AtomicBoolean();
         return Mono.fromCallable(() -> { var prepared = before(request, chain); opened.set(true); return prepared; })

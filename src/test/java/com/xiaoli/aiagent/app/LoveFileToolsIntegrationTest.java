@@ -107,7 +107,7 @@ class LoveFileToolsIntegrationTest {
         ReflectionTestUtils.setField(app, "pgVectorVectorStore", vectors);
 
         var conversations = mock(ConversationService.class);
-        when(conversations.begin(anyLong(), eq("love"), anyString(), anyString()))
+        when(conversations.createOrRestoreJournal(anyLong(), eq("love"), anyString(), anyString()))
                 .thenAnswer(
                         call -> {
                             var journal = mock(Journal.class);

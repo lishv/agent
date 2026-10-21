@@ -75,15 +75,15 @@ class AccountConversationTest {
             assertNull(ctx.getStartupFailure()); var jdbc=ctx.getBean(JdbcTemplate.class); schema(jdbc);
             var accounts=ctx.getBean(AccountService.class); var chats=ctx.getBean(ConversationService.class);
             var alice=register(accounts,"alice@example.test"); var bob=register(accounts,"bob@example.test");
-            var love=chats.begin(alice.getId(),"love","room-love","你好我是小李"); love.loveChunk("恋爱历史"); love.complete(); love.finish();
-            var manus=chats.begin(alice.getId(),"manus","room-manus","你好我是小李");
+            var love=chats.createOrRestoreJournal(alice.getId(),"love","room-love","你好我是小李"); love.loveChunk("恋爱历史"); love.complete(); love.finish();
+            var manus=chats.createOrRestoreJournal(alice.getId(),"manus","room-manus","你好我是小李");
             manus.question(Map.of("questionId","question-1","runId","run-1","question","具体要求？"));
             manus.answer("question-1","真实补充"); manus.step(1,"已检索资料"); manus.finalAnswer("执行完成"); manus.complete(); manus.finish();
             assertEquals(2,chats.list(alice.getId(),null).size()); assertEquals(1,chats.list(alice.getId(),"love").size());
             assertTrue(chats.list(bob.getId(),null).isEmpty());
             assertThrows(BusinessException.class,()->chats.detail(bob.getId(),"room-love"));
             assertThrows(BusinessException.class,()->chats.delete(bob.getId(),"room-love"));
-            assertThrows(BusinessException.class,()->chats.begin(alice.getId(),"manus","room-love","混用应用"));
+            assertThrows(BusinessException.class,()->chats.createOrRestoreJournal(alice.getId(),"manus","room-love","混用应用"));
             var restored=new ConversationServiceImpl(ctx.getBean(ChatSessionMapper.class),ctx.getBean(ObjectMapper.class),ctx.getBean(ContextMemoryService.class),directory.toString()).detail(alice.getId(),"room-manus");
             assertEquals(List.of("user","assistant","user","assistant","assistant"),restored.messages().stream().map(m->m.path("role").asText()).toList());
             assertEquals("真实补充",restored.messages().get(2).path("content").asText());
@@ -96,7 +96,7 @@ class AccountConversationTest {
             assertEquals(1,jdbc.queryForObject("SELECT is_deleted FROM chat_session WHERE id='room-love'",Integer.class));
             assertEquals(2,jdbc.queryForObject("SELECT COUNT(*) FROM chat_session",Integer.class));
             assertFalse(Files.exists(transcript)); assertEquals(1,chats.list(alice.getId(),null).size());
-            assertThrows(BusinessException.class,()->chats.begin(alice.getId(),"love","room-love","不允许复活"));
+            assertThrows(BusinessException.class,()->chats.createOrRestoreJournal(alice.getId(),"love","room-love","不允许复活"));
             chats.delete(alice.getId(),"room-love");
         });
     }
@@ -108,7 +108,7 @@ class AccountConversationTest {
             var request = new MockHttpServletRequest();
             var alice = accounts.register("rename@example.test", "123456", "password123", "password123", "Alice", request);
             var bob = register(accounts, "other@example.test");
-            var journal = chats.begin(alice.getId(), "manus", "rename-room", "原始问题");
+            var journal = chats.createOrRestoreJournal(alice.getId(), "manus", "rename-room", "原始问题");
             var cancelled = new java.util.concurrent.atomic.AtomicBoolean();
             journal.onCancel(() -> cancelled.set(true));
             MockMvc mvc = MockMvcBuilders.standaloneSetup(new ConversationController(chats, accounts, ctx.getBean(ConversationContextService.class)))
@@ -137,7 +137,7 @@ class AccountConversationTest {
             var alice = register(ctx.getBean(AccountService.class), "delete@example.test");
             var chats = ctx.getBean(ConversationService.class);
             var memory = ctx.getBean(ContextMemoryService.class);
-            var journal = chats.begin(alice.getId(), "love", "delete-running", "继续回答");
+            var journal = chats.createOrRestoreJournal(alice.getId(), "love", "delete-running", "继续回答");
             var cancelled = new java.util.concurrent.atomic.AtomicBoolean();
             journal.onCancel(() -> cancelled.set(true)); journal.loveChunk("部分回答");
             Path transcript = directory.resolve("love/" + journal.memoryId() + ".json");
@@ -153,7 +153,7 @@ class AccountConversationTest {
             assertFalse(Files.exists(transcript));
             chats.delete(alice.getId(), "delete-running");
             verify(memory, times(3)).delete("love", journal.memoryId());
-            assertThrows(BusinessException.class, () -> chats.begin(alice.getId(), "love", "delete-running", "不能复活"));
+            assertThrows(BusinessException.class, () -> chats.createOrRestoreJournal(alice.getId(), "love", "delete-running", "不能复活"));
         });
     }
 
@@ -172,8 +172,8 @@ class AccountConversationTest {
                     new com.xiaoli.aiagent.chatmemory.HookContextSummaryGenerator(tokens), directory.toString());
             try {
                 var chats = new ConversationServiceImpl(ctx.getBean(ChatSessionMapper.class), ctx.getBean(ObjectMapper.class), memory, directory.toString());
-                var first = chats.begin(alice.getId(), "love", "purge-love", "我的目标"); first.loveChunk("原回复"); first.complete(); first.finish();
-                var second = chats.begin(alice.getId(), "manus", "keep-manus", "保留任务"); second.finalAnswer("其他会话的回复"); second.complete(); second.finish();
+                var first = chats.createOrRestoreJournal(alice.getId(), "love", "purge-love", "我的目标"); first.loveChunk("原回复"); first.complete(); first.finish();
+                var second = chats.createOrRestoreJournal(alice.getId(), "manus", "keep-manus", "保留任务"); second.finalAnswer("其他会话的回复"); second.complete(); second.finish();
                 List<org.springframework.ai.chat.messages.Message> history = new ArrayList<>();
                 for (int i = 0; i < 6; i++) {
                     history.add(new org.springframework.ai.chat.messages.UserMessage("第" + i + "轮目标".repeat(100)));
@@ -203,7 +203,7 @@ class AccountConversationTest {
             schema(ctx.getBean(JdbcTemplate.class));
             var accounts = ctx.getBean(AccountService.class); var chats = ctx.getBean(ConversationService.class);
             var alice = register(accounts, "background-alice@example.test"); var bob = register(accounts, "background-bob@example.test");
-            var journal = chats.begin(alice.getId(), "love", "running-room", "继续回答");
+            var journal = chats.createOrRestoreJournal(alice.getId(), "love", "running-room", "继续回答");
             var cancelled = new java.util.concurrent.atomic.AtomicBoolean();
             journal.onCancel(() -> cancelled.set(true)); journal.loveChunk("正在回答");
             assertTrue(chats.detail(alice.getId(), "running-room").running());
@@ -225,7 +225,7 @@ class AccountConversationTest {
             var alice = accounts.register("context-alice@example.test", "123456", "password123", "password123", "Alice", aliceRequest);
             var bobRequest = new MockHttpServletRequest();
             accounts.register("context-bob@example.test", "123456", "password123", "password123", "Bob", bobRequest);
-            var journal = chats.begin(alice.getId(), "love", "context-owner", "重要关系与目标"); journal.complete(); journal.finish();
+            var journal = chats.createOrRestoreJournal(alice.getId(), "love", "context-owner", "重要关系与目标"); journal.complete(); journal.finish();
             var engine = ctx.getBean(ContextMemoryService.class);
             var usage = new com.xiaoli.aiagent.domain.vo.ContextUsageView(true,true,1200,32768,4096,28672,4.2,true,70,4,"idle",0,0,0,0,"");
             when(engine.usage("love", alice.getId()+"_context-owner")).thenReturn(usage);

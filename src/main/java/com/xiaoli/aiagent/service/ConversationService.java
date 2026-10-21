@@ -22,7 +22,7 @@ public interface ConversationService {
     Detail detail(Long userId, String chatId);
 
     /** 创建或恢复会话，登记本轮记录器并写入用户消息；同一会话不能重复启动。 */
-    Journal begin(Long userId, String appId, String requestedId, String message);
+    Journal createOrRestoreJournal(Long userId, String appId, String requestedId, String message);
 
     /** 修改标题，不改变会话 ID、消息和正在执行的任务。 */
     Summary rename(Long userId, String chatId, String title);

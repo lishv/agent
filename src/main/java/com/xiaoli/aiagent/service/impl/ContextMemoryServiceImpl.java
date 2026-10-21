@@ -49,14 +49,15 @@ public class ContextMemoryServiceImpl implements ContextMemoryService {
     private final Map<String, FileBasedChatMemoryRepository> backups;
     private final Map<String, ChatModel> models;
     private final Map<String, Integer> overheads = new ConcurrentHashMap<>();
-    private final Map<String, ContextMemoryState> states = new ConcurrentHashMap<>();
+
+    private final Map<String, ContextMemoryState> states = new ConcurrentHashMap<>();//
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
 
-    /** 绑定各应用的模型和记忆仓库，建立独立备份目录并预先校验 Token 预算。 */
+    /**构造函数是初始化上下文记忆服务，绑定各应用的模型和记忆仓库，建立独立备份目录并预先校验 Token 预算。 */
     public ContextMemoryServiceImpl(
             @Qualifier("loveChatMemoryRepository") ChatMemoryRepository love,
             @Qualifier("manusChatMemoryRepository") ChatMemoryRepository manus,
-            @Qualifier("dashScopeChatModel") ChatModel loveModel,
+            @Qualifier("openAiChatModel") ChatModel loveModel,//dashScopeChatModel
             @Qualifier("openAiChatModel") ChatModel manusModel,
             ContextMemoryProperties contextMemoryconfig,
             ContextTokenEstimator contextTokenEstimator,
@@ -90,25 +91,32 @@ public class ContextMemoryServiceImpl implements ContextMemoryService {
                 "上下文应用或会话标识无效");
     }
 
-    /** 按应用和记忆标识复用状态，首次访问时从持久化历史恢复占用及压缩元数据。 */
-    private ContextMemoryState state(String app, String id) {
-        validateKey(app, id);
+  /**① 恢复固定开销 token（从之前 registerProfile 存的 overheads 里取，兜底 12）；
+   * ② 从持久层加载完整历史对话，用 ContextTokenEstimator 算 token 总数；
+   * ③ 扫描历史里有没有压缩摘要，恢复压缩元数据（版本、时间、压缩效果）。所有上下文操作（registerProfile/open/prepare/save/usage）都必须先调 state() 拿状态对象，服务端重启后能从持久层完整恢
+     * @param app 应用名称
+     * @param chatId 会话ID
+     * @return 上下文状态
+     */
+    private ContextMemoryState state(String app, String chatId) {
+        validateKey(app, chatId);// 校验 app 和 chatId 非空、格式合法，防止 NPE 或非法 key
         return states.computeIfAbsent(
-                app + ":" + id,
+                app + ":" + chatId,
                 key -> {
                     ContextMemoryState value = new ContextMemoryState();
-                    value.overheadTokens = overheads.getOrDefault(app, 12);
-                    var history = chatMemoryRepositories.get(app).findByConversationId(id);
-                    updateEstimate(value, history);
-                    history.stream()
-                            .filter(this::isSummary)
-                            .findFirst()
+                    value.overheadTokens = overheads.getOrDefault(app, 12);// 获取该应用已登记的提示词和工具 Token 开销；未登记时使用基础估算值 12
+                    var history = chatMemoryRepositories.get(app).findByConversationId(chatId);// 从持久化历史中获取会话记录
+                    updateEstimate(value, history);// 更新估算占用
+                    history.stream()//恢复压缩元数据
+                            .filter(this::isSummary)// 只看标记为「压缩摘要」的消息
+                            .findFirst() // 找最近的一条（历史里可能只有一条）
                             .ifPresent(
                                     message -> {
-                                        value.count = number(message, "contextRevision");
-                                        value.lastCompactedAt = number(message, "compactedAt");
-                                        value.before = (int) number(message, "beforeTokens");
-                                        value.after = (int) number(message, "afterTokens");
+                                        //读取元数据对应key的数字字段,没有则返回0
+                                        value.count = number(message, "contextRevision");// 压缩版本号（比如压了第3次）
+                                        value.lastCompactedAt = number(message, "compactedAt");// 压缩时间戳
+                                        value.before = (int) number(message, "beforeTokens");// 压缩前占用 Token 数
+                                        value.after = (int) number(message, "afterTokens");// 压缩后占用 Token 数
                                         value.phase = "completed";
                                         value.message = "历史上下文已压缩，完整聊天记录仍保留";
                                     });
@@ -127,18 +135,26 @@ public class ContextMemoryServiceImpl implements ContextMemoryService {
         return Boolean.TRUE.equals(message.getMetadata().get(SUMMARY));
     }
 
-    /** 登记应用默认的系统提示、工具定义与控制提示所占 Token开销。 */
+    /** 登记应用默认的系统提示、工具定义与下一步提示所占 固定Token开销。 */
     @Override
-    public void registerProfile(String app, String system, ToolCallback[] tools, String controlPrompt) {
-        overheads.put(app, contextTokenEstimator.overhead(system, tools) + contextTokenEstimator.text(controlPrompt));
+    public void registerProfile(String app, String system, ToolCallback[] tools, String nextStepPrompt) {
+        overheads.put(app, contextTokenEstimator.computeOverheadTokens(system, tools) + contextTokenEstimator.text(nextStepPrompt));
     }
 
     /** 在会话锁内用实际任务配置更新提示和工具开销，并同步估算占用开销。 */
+    /**
+     * 更新指定会话的提示和工具 Token 开销。
+     * @param app 应用名称
+     * @param chatId 会话ID
+     * @param systemPrompt 系统提示
+     * @param tools 工具定义数组
+     * @param nextStepPrompt 下一步提示
+     */
     @Override
-    public void registerProfile(String app, String chatId, String system, ToolCallback[] tools, String controlPrompt) {
+    public void registerProfile(String app, String chatId, String systemPrompt, ToolCallback[] tools, String nextStepPrompt) {
         ContextMemoryState contextMemoryState = state(app, chatId);
         // 计算新配置的开销
-        int overhead = contextTokenEstimator.overhead(system, tools) + contextTokenEstimator.text(controlPrompt);
+        int overhead = contextTokenEstimator.computeOverheadTokens(systemPrompt, tools) + contextTokenEstimator.text(nextStepPrompt);
         contextMemoryState.lock.lock();
         try {
             requireAvailable(contextMemoryState);
@@ -159,10 +175,7 @@ public class ContextMemoryServiceImpl implements ContextMemoryService {
     /** 合计历史消息和提示开销，更新估算 Token 数并防止整数溢出。 */
     private void updateEstimate(ContextMemoryState state, List<Message> messages) {
         state.estimatedTokens =
-                (int)
-                        Math.min(
-                                Integer.MAX_VALUE,
-                                (long) state.overheadTokens + contextTokenEstimator.messages(messages));
+                (int) Math.min(Integer.MAX_VALUE,(long) state.overheadTokens + contextTokenEstimator.computeMessagesTokens(messages));// 更新估算占用
     }
 
     /** 在会话锁内独占上下文并恢复历史；已删除或已被占用时拒绝打开。 */
@@ -327,7 +340,7 @@ public class ContextMemoryServiceImpl implements ContextMemoryService {
         // 一个长智能体任务也可压缩已经完成的步骤，保留最新一步或尚未完成的工具链。
         if ("manus".equals(app) && retainedTokens(state, history, cut) >= limit) {
             int target = (int) (config.budget(app).inputBudget() * config.getTargetRatio());
-            int latestUserTokens = contextTokenEstimator.messages(List.of(history.get(turns.getLast())));
+            int latestUserTokens = contextTokenEstimator.computeMessagesTokens(List.of(history.get(turns.getLast())));
             for (int candidate : safe) {
                 if (candidate <= cut) continue;
                 cut = candidate;
@@ -357,7 +370,7 @@ public class ContextMemoryServiceImpl implements ContextMemoryService {
     /** 估算保留区域、摘要以及系统和工具定义的总 Token 开销。 */
     private int retainedTokens(ContextMemoryState state, List<Message> history, int cut) {
         return state.overheadTokens
-                + contextTokenEstimator.messages(history.subList(cut, history.size()))
+                + contextTokenEstimator.computeMessagesTokens(history.subList(cut, history.size()))
                 + config.getSummaryMaxTokens();
     }
 
@@ -397,7 +410,7 @@ public class ContextMemoryServiceImpl implements ContextMemoryService {
                             config.getSummaryMaxTokens());
             var summaryMessage = summaryMessage(summary, state, before);
             List<Message> result = compactedHistory(history, cut, summaryMessage);
-            int after = contextTokenEstimator.messages(result) + state.overheadTokens;
+            int after = contextTokenEstimator.computeMessagesTokens(result) + state.overheadTokens;
             if (after >= before) {
                 state.phase = "noop";
                 state.message = "摘要未减少占用，已保留原上下文";

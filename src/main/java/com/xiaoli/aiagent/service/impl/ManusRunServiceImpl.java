@@ -89,13 +89,13 @@ public class ManusRunServiceImpl implements ManusRunService {
         this.memoryRepository = memoryRepository;
     }
 
-    /** 为内部任务自动生成记忆标识，委托完整启动入口执行。 */
+    /** 为内部任务自动生成记忆标识，委托完整启动入口执行。 没用 */
     @Override
     public SseEmitter start(String message, String requestedRunId) {
         return start(message, requestedRunId, null);
     }
 
-    /** 为内部任务指定记忆标识，委托完整启动入口执行，不绑定页面记录器。 */
+    /** 为内部任务指定记忆标识，委托完整启动入口执行，不绑定页面记录器。 没用,仅测试接口 */
     @Override
     public SseEmitter start(String message, String requestedRunId, String requestedChatId) {
         return start(message, requestedRunId, requestedChatId, 0L, null);
@@ -118,17 +118,23 @@ public class ManusRunServiceImpl implements ManusRunService {
             String requestedChatId,
             Long userId,
             Journal journal) {
-
+        // 校验任务描述是否为空或超过最大长度
         ThrowUtils.throwIf(message == null || message.isBlank() || message.length() > ChatConstant.MAX_INPUT_LENGTH, ErrorCode.PARAMS_ERROR, "请输入 1 到 " + ChatConstant.MAX_INPUT_LENGTH + " 个字符");
         // 校验任务 ID 格式
         String runId = resolveId(requestedRunId, "[A-Za-z0-9_-]{8,128}", "runId 格式不正确");
         // 校验会话 ID 格式
         String chatId = resolveId(requestedChatId, "[A-Za-z0-9_-]{1,128}", "chatId 格式不正确");
+
         //interaction 负责管理本次任务与用户之间的追问,管理“提问和等待回答”这件事。 journal：把问题、回答和状态保存到聊天记录里。
         HumanInteractionSession interaction = new HumanInteractionSession(runId, answerTimeout);
 
+        //  创建智能体
         MyManus agent = new MyManus(tools, chatModel, mcpTools, interaction::ask);
+        agent.setRunId(runId);// 任务ID,用于给虚拟线程命名标识不同线程
+
+        //给工具注入服务端身份（userId/runId），AI 模型全程看不到，工具用它做用户隔离、权限校验、生成正确下载链接//即userId和runId
         agent.setToolContext(Map.of(GeneratedFileService.USER_ID, userId, GeneratedFileService.RUN_ID, runId));
+
         // 校验任务是否正在执行,  如果正在执行, 则抛出异常,  否则登记任务
         if (runs.putIfAbsent(runId, agent) != null) {
             throw new BusinessException(ErrorCode.CONFLICT_ERROR, "该任务正在执行");
@@ -151,9 +157,11 @@ public class ManusRunServiceImpl implements ManusRunService {
             prepareContext(chatId, agent, contextOpened);
             return agent.runStream(
                     message,
-                    emitter -> publishStart(emitter, runId, chatId, interaction, journal),
-                    () -> {
+                    emitter -> publishStart(emitter, runId, chatId, interaction, journal),// 开始时回调执行的方法
+                    () -> {// 结束时回调执行的方法
+                        //1. 释放资源
                         release(runId, chatId, userId, agent, interaction, contextOpened);
+                        //2. 记录任务结束状态,如果记录器不为空,则记录任务正常结束状态,否则记录任务没有complete代表异常结束状态
                         if (journal != null) {
                             if (agent.getState() == AgentState.FINISHED) journal.complete();//complete是用来标记这个任务是否是正常结束的​
                             journal.finish();
@@ -202,6 +210,7 @@ public class ManusRunServiceImpl implements ManusRunService {
             // 绑定上下文准备器,用于压缩上下文
             agent.setContextPreparer(messages -> contextMemoryService.prepare("manus", chatId, messages));
         }
+
         agent.setMemoryWriter(messages -> saveMemory(chatId, agent, messages));
     }
 
@@ -209,14 +218,9 @@ public class ManusRunServiceImpl implements ManusRunService {
     private void saveMemory(String chatId, MyManus agent, List<Message> messages) {
         synchronized (agent) {
             if (activeChats.get(chatId) != agent) return;
-            var history =
-                    messages.stream()
-                            .filter(
-                                    item ->
-                                            !(item instanceof UserMessage)
-                                                    || !agent.getNextStepPrompt()
-                                                            .equals(item.getText()))
-                            .toList();
+            // 过滤用户消息和下一步提示,只保存智能体回答
+            var history = messages.stream().filter(item ->!(item instanceof UserMessage)|| !agent.getNextStepPrompt().equals(item.getText()))
+                                            .toList();
             if (contextMemoryService != null) contextMemoryService.save("manus", chatId, history);
             else memoryRepository.saveAll(chatId, history);
         }
@@ -228,24 +232,35 @@ public class ManusRunServiceImpl implements ManusRunService {
      * @param emitter 事件推送器
      * @param runId 任务ID
      * @param chatId 会话ID
-     * @param interaction 人机交互会话
+     * @param humanInteractionSession 人机交互会话
      * @param journal 记忆记录
      */
     private void publishStart(
-            SseEmitter emitter,
-            String runId,
-            String chatId,
-            HumanInteractionSession interaction,
-            Journal journal) {
-        interaction.setPublisher(
-                question -> {
-                    if (journal != null) journal.question(question);
-                    sendEvent(emitter, "human_question", question);
-                });
-        sendEvent(
-                emitter,
-                "run_started",
-                Map.of("runId", runId, "chatId", journal == null ? chatId : journal.chatId()));
+            SseEmitter emitter,// 事件推送器
+            String runId,// 任务ID
+            String chatId,// 会话ID
+            HumanInteractionSession humanInteractionSession,// 人机交互会话
+            Journal journal) {// 记忆记录
+                //方法一: 给 AI 装「追问出口」,用于发布像用户询问的问题
+                humanInteractionSession.setPublisher(
+                        question -> {
+                            if (journal != null) journal.question(question);// 记录向用户追问,如果有记忆记录,则先把用户追问记录到记忆记录中
+                            sendEvent(emitter, "human_question", question);// 然后在记录后,使用内部传来的SseEmitter对象发布对用户的追问事件到前端的SSE连接中
+                        });
+                //方法二: 发布任务与页面会话标识,用于浏览器断开不取消执行,给前端发初始化通知,前端拿到 run_started 事件后，会把 runId 和 chatId 存到 localStorage 里：
+                sendEvent(emitter, "run_started", Map.of("runId", runId, "chatId", journal == null ? chatId : journal.chatId()));
+        //{
+        //  "runId": "abc123xxx",
+        //  "chatId": "def456yyy"
+        //}
+        //
+        //如果浏览器刷新/断开：
+        //  → SSE 连接断了，但 localStorage 里的 runId/chatId 还在
+        //  → 前端重新打开页面 → 用 runId/chatId 调后端的「获取会话状态」接口
+        //  → 后端从 journal 文件里恢复所有消息（包括待回答的追问）
+        //  → 如果 AI 任务还在跑（没被取消），继续推送后续的 Step 进度和最终答案
+        //  → 用户完全感知不到刷新过！
+
     }
 
     /** 结束和启动异常共用资源清理，按原实例移除运行登记，并且只关闭一次上下文。 */

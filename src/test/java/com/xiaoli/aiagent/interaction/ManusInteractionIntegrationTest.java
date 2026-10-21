@@ -10,7 +10,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xiaoli.aiagent.controller.AiController;
 import com.xiaoli.aiagent.controller.ConversationController;
 import com.xiaoli.aiagent.service.AccountService;
-import com.xiaoli.aiagent.service.ChatApplicationService;
 import com.xiaoli.aiagent.service.ConversationService;
 import com.xiaoli.aiagent.service.ConversationContextService;
 import com.xiaoli.aiagent.service.ContextMemoryService;
@@ -39,7 +38,6 @@ import com.xiaoli.aiagent.tools.TerminateTool;
 import org.springframework.http.MediaType;
 import org.springframework.http.converter.StringHttpMessageConverter;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
-import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -211,7 +209,7 @@ class ManusInteractionIntegrationTest {
             if (cancel == null) return false;
             cancel.run(); return true;
         });
-        when(conversations.begin(anyLong(), anyString(), org.mockito.ArgumentMatchers.nullable(String.class), anyString())).thenAnswer(invocation -> {
+        when(conversations.createOrRestoreJournal(anyLong(), anyString(), org.mockito.ArgumentMatchers.nullable(String.class), anyString())).thenAnswer(invocation -> {
             String message = invocation.getArgument(3);
             if (message.isBlank() || message.length() > ChatConstant.MAX_INPUT_LENGTH) throw new BusinessException(ErrorCode.PARAMS_ERROR);
             String id = invocation.getArgument(2);

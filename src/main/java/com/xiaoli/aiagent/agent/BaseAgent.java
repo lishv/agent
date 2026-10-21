@@ -41,9 +41,10 @@ public abstract class BaseAgent {
         return thread;
     });
 
-    private String name;
+    private String name;// agent名称
     private String systemPrompt;// 系统提示
     private String nextStepPrompt;// 下一步提示
+    private String runId;// 任务ID
     private volatile AgentState state = AgentState.IDLE;// 代理状态，默认为IDLE
     // 当前步骤索引
     private int currentStep = 0;
@@ -62,7 +63,7 @@ public abstract class BaseAgent {
     private String finalAnswer;// 最终答案
     private Consumer<Throwable> errorObserver = error -> { };// 错误观察者
     // 显式取消任务；浏览器断开连接只关闭传输通道。
-    private Runnable streamCancelAction = () -> state = AgentState.CANCELLED;// 显式取消任务
+    private Runnable streamCancelAction = () -> state = AgentState.CANCELLED;// 显式取消任务,后面在runstream里会再次被赋值调用
     /*等同于,被Lambda表达式替换
             // 准备一个“任务”，任务内容是：把 state 改成 CANCELLED
         Runnable streamCancelAction = new Runnable() {
@@ -88,7 +89,11 @@ public abstract class BaseAgent {
             for (int i = 0; i < maxSteps && state == AgentState.RUNNING; i++) {
                 currentStep = i + 1;
                 //log.info("Executing step {}/{}", currentStep, maxSteps);
+
+
                 String progress = classifyResult(step());// 分类当前步骤的结果,看是不是最终答案,如果返回空说明是最终答案
+
+
                 if (StrUtil.isNotBlank(progress)) results.add("Step " + currentStep + ": " + progress);
                 if (StrUtil.isNotBlank(finalAnswer)) results.add(finalAnswer);// 如果是最终答案,则添加到结果中,因为最终答案是分类结果,不是当前步骤的结果,所以要单独添加
                 saveMemory();// 每次循环结束,把当前对话的所有会话记录(包括历史记录)保存到内存中
@@ -126,25 +131,29 @@ public abstract class BaseAgent {
         AtomicBoolean closed = new AtomicBoolean();// 用于标记是否已关闭连接
         AtomicBoolean detached = new AtomicBoolean();// 用于标记是否已断开连接
         AtomicBoolean cleaned = new AtomicBoolean();// 用于标记是否已清理资源
-        AtomicReference<Thread> worker = new AtomicReference<>();// 用于存储任务执行线程
+        AtomicReference<Thread> worker = new AtomicReference<>();// 用于存储任务执行线程的虚拟线程
         AtomicReference<ScheduledFuture<?>> heartbeat = new AtomicReference<>();// 用于存储心跳任务
 
-        // 断开连接时执行的方法
+        // 断开连接时执行的方法,1.标记为已断开连接,2.     取消心跳任务,停止像前端发送空包
         Runnable detach = () -> {
             detached.set(true);// 标记为已断开连接
             ScheduledFuture<?> timer = heartbeat.get();// 获取心跳任务
             if (timer != null) timer.cancel(false);// 取消心跳任务,停止像前端发送空包
         };
-        // 发布事件到前端时执行的方法
+
+
+        // 发布事件到前端时执行的方法,1.判断是否已断开连接,如果已断开连接true,则不发布事件event,2.发布事件event到前端,3.如果发布事件event失败,则断开连接时执行的方法
         Consumer<SseEmitter.SseEventBuilder> publish = event -> {
             if (detached.get()) return;// 判断是否已断开连接,如果已断开连接true,则不发布事件event
             try { emitter.send(event); }// 发布事件event到前端
             catch (IOException | IllegalStateException e) { detach.run(); }
         };
+
+
         // 释放资源时执行的方法,标记为已关闭连接,清理资源,断开连接时执行的方法,结束时回调执行的方法
         Runnable release = () -> {
             closed.set(true);// 标记为已关闭连接
-            //如果已清理资源,则直接返回
+            //如果已清理资源,则直接返回,1. 如果已清理资源,则直接返回,2.  如果未清理资源,则清理资源
             if (!cleaned.compareAndSet(false, true)) return;
             detach.run();// 断开连接时执行的方法
             try {
@@ -155,60 +164,76 @@ public abstract class BaseAgent {
                 cleanup();
             }
         };
+
+
         // 关闭连接时执行的方法,设置状态为参数reason原因:cancel或error或finished,并中断任务执行线程,释放资源,通知 Spring 连接结束 ──
         Consumer<AgentState> close = reason -> {
-            //如果已关闭连接,则直接返回
+            //1. 如果已关闭连接,则直接返回,2. 如果未关闭连接,则关闭连接
             if (!closed.compareAndSet(false, true)) return;
             // 切换状态为参数reason原因:cancel或error或finished
+
             state = reason;
 
-            // 如果任务执行线程不是当前线程,则中断任务执行线程
+            // 如果任务执行线程不是当前线程,则获取当前任务执行线程,并中断任务执行线程
             Thread thread = worker.get();
             if (thread != null && thread != Thread.currentThread()) thread.interrupt();// 中断任务执行的虚拟线程,停止任务执行
             release.run();// 释放资源
             emitter.complete();// 通知 Spring SSE连接结束 ─
         };
 
+        //异步流式用,取消任务时执行的方法,覆盖简单的run()需要的方法
+        streamCancelAction = () -> close.accept(AgentState.CANCELLED);// 取消任务时执行的方法,为 streamCancelAction方法赋值为AgentState.CANCELLED状态
 
-        streamCancelAction = () -> close.accept(AgentState.CANCELLED);// 取消任务时执行的方法
-        emitter.onTimeout(detach);
-        emitter.onError(error -> detach.run());
-        emitter.onCompletion(detach);
+
+        emitter.onTimeout(detach);// 超时断开连接时执行的方法,为onTimeout方法赋值为detach方法
+        emitter.onError(error -> detach.run());// 错误断开连接时执行的方法,为onError方法赋值为detach方法
+        emitter.onCompletion(detach);// 完成断开连接时执行的方法
 
         try {
-            onStart.accept(emitter);// 开始时回调执行的方法
+            onStart.accept(emitter);// 开始时回调执行的方法,emitter正是从runStream方法中传入的SseEmitter对象到外部
         } catch (RuntimeException e) {
             state = AgentState.ERROR;
             release.run();//释放资源
-            emitter.completeWithError(e);
+            emitter.completeWithError(e);//SSE连接结束,并发送错误事件e
             return emitter;
         }
-
-        // 心跳只维护传输通道，断开连接后仍可从会话文件查看进度、回答追问。
+        //心跳必须在worker 之前、onStart 之后设置——因为 onStart 里业务层可能已经开始发 SSE 事
+        // 心跳只维护传输通道，断开连接后仍可从会话文件查看进度、回答追问。1.每10秒发送一次空包,2.如果关闭连接或断开连接,则不发送空包
         heartbeat.set(HEARTBEATS.scheduleAtFixedRate(() -> {
             if (closed.get() || detached.get()) return;
             publish.accept(SseEmitter.event().comment("keepalive"));
         }, 10, 10, TimeUnit.SECONDS));
-        if (detached.get()) detach.run();
 
-        // 用户回答等待不占用公共 ForkJoinPool 的工作线程。
-        worker.set(Thread.ofVirtual().name("ai-agent-" + name).start(() -> {
+
+        if (detached.get()) detach.run();//如果这时候已断开连接,则直接返回
+        // 启用虚拟线程,执行任务,这是为了不占用公共 ForkJoinPool 的工作线程,保持任务执行的并发性
+        worker.set(Thread.ofVirtual().name("ai-agent-" + runId).start(() -> {
+            //1.将用户输入userPrompt添加到消息列表messageList中作为用户初始输入
             messageList.add(new UserMessage(userPrompt));
             try {
-                saveMemory();
+                saveMemory();// 保存历史提示词与当前用户输入
                 for (int i = 0; i < maxSteps && !closed.get() && state == AgentState.RUNNING; i++) {
                     currentStep = i + 1;
-                    log.info("Executing step {}/{}", currentStep, maxSteps);
-                    String result = classifyResult(step());
+                    //log.info("Executing step {}/{}", currentStep, maxSteps);
+
+
+
+
+                    String result = classifyResult(step());//判断当前步骤是中间步骤还是最终步骤
+
+
+
+
                     if (closed.get()) return;
-                    saveMemory();
+
+                    saveMemory();//保存历史提示词与当前用户输入
                     if (closed.get()) return;
-                    if (StrUtil.isNotBlank(result)) {
-                        stepObserver.accept(currentStep, result);
+                    if (StrUtil.isNotBlank(result)) {//判断当前步骤是中间步骤还是最终步骤,如果是中间步骤,则发布事件到前端
+                        stepObserver.accept(currentStep, result);//
                         publish.accept(SseEmitter.event().data("Step " + currentStep + ": " + result, UTF8_TEXT));
                     }
                     if (closed.get()) return;
-                    if (StrUtil.isNotBlank(finalAnswer)) {
+                    if (StrUtil.isNotBlank(finalAnswer)) {//如果是最终步骤,则发布事件到前端
                         finalAnswerObserver.accept(finalAnswer);
                         publish.accept(SseEmitter.event().name("final_answer").data(finalAnswer, UTF8_TEXT));
                     }
@@ -220,7 +245,10 @@ public abstract class BaseAgent {
                     stepObserver.accept(0, "执行结束：达到最大步骤（" + maxSteps + "）");
                     publish.accept(SseEmitter.event().data("执行结束：达到最大步骤（" + maxSteps + "）", UTF8_TEXT));
                 }
+
+                // 发布完成事件到前端
                 publish.accept(SseEmitter.event().name("complete").data(Map.of("reason", reason)));
+
             } catch (Exception e) {
                 if (closed.get()) return;
                 state = AgentState.ERROR;
@@ -228,29 +256,39 @@ public abstract class BaseAgent {
                 try { errorObserver.accept(e); } catch (RuntimeException storageError) { log.error("无法记录任务错误", storageError); }
                 publish.accept(SseEmitter.event().name("error").data("执行错误：" + ErrorResponse.from(e).message(), UTF8_TEXT));
             } finally {
-                release.run();
-                emitter.complete();
+                release.run();//释放资源
+                emitter.complete();//SSE连接结束
             }
         }));
         return emitter;
     }
 
-    public synchronized void cancelStream() {
-        streamCancelAction.run();
-    }
+    /**
+     * 执行任务的步骤,后面需要根据实际情况实现
+     * @return
+     */
+    public abstract String step();
+
 
     /**
-     * 验证任务是否可以开始
-     * @param userPrompt 用户提示
+     * 取消任务,即将任务状态设置为CANCELLED,
+     * 并在运行时判断state!=AgentState.RUNNING,则直接返回
      */
+    public synchronized void cancelStream() {
+        streamCancelAction.run();//即给任务state赋值为CANCELLED,然后在运行时判断state!=AgentState.RUNNING,则直接返回
+    }
+
+
+
+    /*验证任务是否可以开始,如果任务状态不是IDLE,则抛出异常*/
     private void validateStart(String userPrompt) {
         ThrowUtils.throwIf(state != AgentState.IDLE, ErrorCode.CONFLICT_ERROR, "当前任务已启动或结束，请重新发起任务");
         ThrowUtils.throwIf(StrUtil.isBlank(userPrompt), ErrorCode.PARAMS_ERROR, "任务内容不能为空");
     }
 
-    public abstract String step();
 
-    /** 最终回答的分类,什么才是最终答案。 */
+
+    /*判断当前步骤是中间步骤还是最终步骤*/
     private String classifyResult(String result) {
         if (state == AgentState.FINISHED && StrUtil.isBlank(finalAnswer)) {
             ThrowUtils.throwIf(StrUtil.isBlank(result), ErrorCode.OPERATION_ERROR, "未收到最终回答，请重试");

@@ -41,14 +41,9 @@ public final class FileConversationJournal implements Journal {
     private final ConversationTranscriptStore conversationTranscriptStore;//负责 .json 文件的原子读写，隔离文件 IO 细节。
     private final Consumer<ChatSession> onSave;//强制保存后回调外部更新 ChatSession.updatedAt 等元数据（数据库时间戳刷新）。
     private final Consumer<FileConversationJournal> onClose;//记录器关闭时回调外部把自身从"活跃会话表"中移除，释放并发锁。
-    private final List<ObjectNode> messagesJson;//页面消息列表，包含历史恢复的消息 + 本轮新增的全部消息，是 .json 文件的内存镜像。
+    private final List<ObjectNode> messages;//页面消息列表，包含历史恢复的消息 + 本轮新增的全部消息，是 .json 文件的内存镜像。
     private final int firstMessage;//本轮新增消息的起始索引，用于 finish() 时只扫描本轮消息判断状态。
-
-  //loveCurrentReply.status 确实是供前端判断消息状态的字段，因为
-  // 但 loveCurrentReply 主要用于保存和恢复页面消息。实时 SSE 输出直接来自模型产生的 chunk
-  //loveCurrentReply 就是 messagesJson 里那条消息的引用，内存指向不变，对它的修改直接反映到messagesJson列表中
-    private ObjectNode loveCurrentReply;//指向 messages 列表中"当前这轮 AI 回复"那条消息。用于 failed/complete 时更新状态。
-
+    private ObjectNode loveReply;//本轮流式追加的 AI 最终回复引用（loveChunk 逐块累加 content），用于 failed/complete 时更新状态。
     private boolean closed;//    记录器是否已关闭。关闭后不再接受任何写入，所有方法直接 return。
     private boolean completed; //    AI 执行是否正常完成（未出错、未取消），用于 finish() 时决定是否补写 stopped 状态。
     private boolean failed;//    AI 执行是否抛出异常，用于 failed() 和 finish() 时的状态判断。
@@ -78,8 +73,8 @@ public final class FileConversationJournal implements Journal {
         this.conversationTranscriptStore = conversationTranscriptStore;
         this.onSave = onSave;
         this.onClose = onClose;
-        this.messagesJson = conversationTranscriptStore.read(row);
-        this.firstMessage = messagesJson.size();//    本轮新增消息的起始索引，用于 finish() 时只扫描本轮消息判断状态,即最后一个消息的索引。
+        this.messages = conversationTranscriptStore.read(row);
+        this.firstMessage = messages.size();
         stopPendingMessages();
     }
 
@@ -133,7 +128,7 @@ public final class FileConversationJournal implements Journal {
     public void cancel() {
         Runnable callback;
         synchronized (this) {
-            callback = cancellation;//    记录器已关闭，立即执行传入的回调。
+            callback = cancellation;
         }
         callback.run();//执行cancellation的回调
         finish();
@@ -141,17 +136,18 @@ public final class FileConversationJournal implements Journal {
 
     /** 创建带唯一标识、角色、内容、状态和时间的页面消息，并加入当前历史。 */
     private ObjectNode createMessage(String role, String content, String status) {
-        ObjectNode currentReplyJson =
+        ObjectNode item =
                 json.createObjectNode()//创建一个json对象
                         .put("id", UUID.randomUUID().toString())
                         .put("role", role)
                         .put("content", content)
                         .put("status", status)
                         .put("createdAt", System.currentTimeMillis());//    消息创建时间，用于排序和展示。
-        currentReplyJson.putArray("questions");
-        messagesJson.add(currentReplyJson);//    加入当前历史消息列表
-        return currentReplyJson;
+        item.putArray("questions");
+        messages.add(item);
+        return item;
     }
+
     /** 追加用户消息并立即保存；answer 标记其是否来自智能体追问回答。
      * true:这是用户回答智能体追问
      * false:这是用户主动发起的对话
@@ -172,11 +168,10 @@ public final class FileConversationJournal implements Journal {
     @Override
     public synchronized void loveChunk(String chunk) {
         if (closed) return;
-        if (loveCurrentReply == null)//第一次调用loveChunk方法,创建一个空的json对象,用于存储正式正式回答
-            loveCurrentReply = createMessage("assistant", "", "streaming").put("kind", "final");//这里需要保存到message上下文,因为恋爱助手（Love）没有多步推理，它的输出就是最终答案,直接最终对话
-        //这里Message的最后一轮也会添加,loveCurrentReply 就是 messages 里那条消息的引用，内存指向不变，对它的修改直接反映到Meaagse列表中
-        loveCurrentReply.put("content", loveCurrentReply.path("content").asText() + chunk);//    累加文本片段到正式正式回答
-        save(false);//    按间隔保存,攒够200ms 再写一次。最后更新数据库对话时间用于排序。
+        if (loveReply == null)
+            loveReply = createMessage("assistant", "", "streaming").put("kind", "final");
+        loveReply.put("content", loveReply.path("content").asText() + chunk);
+        save(false);
     }
 
     /** 追加带步骤编号的进度消息并立即保存，与最终答案区分展示。 */
@@ -247,7 +242,7 @@ public final class FileConversationJournal implements Journal {
     @Override
     public synchronized void answer(String questionId, String answer) {
         if (closed) return;
-        for (ObjectNode item : messagesJson)
+        for (ObjectNode item : messages)
             for (var question : item.path("questions")) {
                 if (questionId.equals(question.path("questionId").asText())) {
                     ((ObjectNode) question).put("answer", answer);
@@ -263,7 +258,7 @@ public final class FileConversationJournal implements Journal {
     public synchronized void failed(Throwable error) {
         if (closed) return;
         failed = true;
-        if (loveCurrentReply != null) loveCurrentReply.put("status", "error");
+        if (loveReply != null) loveReply.put("status", "error");
         else createMessage("assistant", "", "error");
         save(true);
     }
@@ -272,13 +267,13 @@ public final class FileConversationJournal implements Journal {
     @Override
     public synchronized void complete() {
         completed = true;
-        if (loveCurrentReply != null && !closed) loveCurrentReply.put("status", "done");
+        if (loveReply != null && !closed) loveReply.put("status", "done");
     }
 
     /** 返回消息列表的深拷贝，防止读取方修改运行中的历史。 */
     @Override
     public synchronized List<ObjectNode> snapshot() {
-        return messagesJson.stream().map(ObjectNode::deepCopy).toList();
+        return messages.stream().map(ObjectNode::deepCopy).toList();
     }
 
     /** 保存完成、失败或中止状态，随后关闭记录器并释放登记；重复调用直接返回。 */
@@ -286,10 +281,9 @@ public final class FileConversationJournal implements Journal {
     public synchronized void finish() {
         if (closed) return;
         boolean pending =
-                messagesJson.subList(firstMessage, messagesJson.size()).stream()
+                messages.subList(firstMessage, messages.size()).stream()
                         .anyMatch(item -> List.of("streaming", "waiting").contains(item.path("status").asText()));
-        //  检查是否有未结束的文本或追问消息。,即是否有status为streaming或waiting的消息
-        //  stopPendingMessages();将所有为 streaming 或 waiting 状态的消息标记为 stopped。强制结束所有未完成的消息。
+        //  检查是否有未结束的文本或追问消息。
         stopPendingMessages();
         if (!completed && !failed && !pending)
             createMessage("assistant", "", "stopped");
@@ -302,11 +296,8 @@ public final class FileConversationJournal implements Journal {
     }
 
     /** 将未结束的文本或追问标为中止，并让所有尚未回答的问题过期。 */
-    /**
-     * 遍历 messagesJson 列表，将所有为 streaming 或 waiting 状态的消息标记为 stopped。
-     */
     private void stopPendingMessages() {
-        messagesJson.forEach(
+        messages.forEach(
                 item -> {
                     if (List.of("streaming", "waiting").contains(item.path("status").asText()))
                         item.put("status", "stopped");
@@ -319,23 +310,18 @@ public final class FileConversationJournal implements Journal {
                 });
     }
 
-    /**
-     * 这是 FileConversationJournal 的核心持久化方法，负责把内存中的 messages 列表写入 JSON 文件。force 参数控制保存策略。
-     * @param force true	立即写盘，更新数据库对话时间用于排序，写入失败转换为业务异常。
-     *              如果为 false，按间隔保存,攒够200ms 再写一次。
-     */
+    /** 按间隔或强制保存页面记录；强制保存同时更新会话时间，写入失败转换为业务异常。 */
     private void save(boolean force) {
-        if (!force && System.nanoTime() - lastSave < 200_000_000L) return;//：非强制保存时，限制写盘频率为 200ms 一次。
+        if (!force && System.nanoTime() - lastSave < 200_000_000L) return;
 
         Path target = conversationTranscriptStore.path(row);//根据row获取对应的文件路径
         try {
-            ////把内存中的 messages 列表（List<ObjectNode>）序列化成 JSON 写入文件。这是全量覆盖写，不是追加。
-            conversationTranscriptStore.writeToJson(target, messagesJson);
+            conversationTranscriptStore.write(target, messages);//将messages写入文件,保存效果为json字符串
+
             lastSave = System.nanoTime();//更新lastSave为当前时间,用于下一次保存间隔计算
 
             if (force) onSave.accept(row);//如果是强制保存,则调用onSave.accept(row)方法,移除active中的该会话
-            //force=true 时触发 onSave -touchSession,回调,更新数据库中的会话时间→closed=true  的作用是更新数据库中会话的 updatedAt 时间戳，让最近活跃的会话排到前面,
-            // 从自身静态 active 缓存移除。force 参数是性能与安全的开关：关键节点（存追问/关闭会话）用 true（强制刷盘+通知外部），临时更新用 false（攒一批再刷盘）。
+            //force=true 时触发 onSave 回调,更新数据库中的会话时间→closed=true 时从自身静态 active 缓存移除。force 参数是性能与安全的开关：关键节点（存追问/关闭会话）用 true（强制刷盘+通知外部），临时更新用 false（攒一批再刷盘）。
         } catch (Exception e) {
             throw new BusinessException(ErrorCode.SERVICE_UNAVAILABLE, "无法保存对话记录，请稍后重试", e);
         }

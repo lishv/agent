@@ -249,7 +249,7 @@ public final class FileConversationJournal implements Journal {
                 if (questionId.equals(question.path("questionId").asText())) {
                     ((ObjectNode) question).put("answer", answer);
                     item.put("status", "done");
-                    addUser(answer, true);
+                    addUser(answer, true);//将用户回答添加到用户回答列表中,并设置为已处理
                     return;
                 }
             }

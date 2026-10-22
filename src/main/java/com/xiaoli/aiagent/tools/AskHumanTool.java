@@ -15,7 +15,7 @@ import java.util.function.Function;
 public class AskHumanTool {
 
     private final Function<String, String> answerProvider;
-
+    //回调函数，interaction::ask
     public AskHumanTool(Function<String, String> answerProvider) {
         this.answerProvider = Objects.requireNonNull(answerProvider);
     }
@@ -34,7 +34,7 @@ public class AskHumanTool {
         if (question == null || question.isBlank()) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "question 不能为空");
         }
-        // 将问题交给外部回答提供方
+        // 将问题交给外部回答提供方interaction::ask
         String answer = answerProvider.apply(question);
 
         if (answer == null || answer.isBlank()) {

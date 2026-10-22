@@ -85,7 +85,7 @@ public class ManusRunServiceImpl implements ManusRunService {
             @Qualifier("allTools") ToolCallback[] tools,
             @Qualifier("openAiChatModel") ChatModel chatModel,
             ToolCallbackProvider mcpTools,
-            @Value("${manus.human-answer-timeout-ms:600000}") long timeoutMillis,
+            @Value("${manus.human-answer-timeout-ms:600000}") long timeoutMillis,// 追问的最长等待时间（默认 10 分钟）
             @Qualifier("manusChatMemoryRepository") ChatMemoryRepository memoryRepository) {
         this.tools = tools;
         this.chatModel = chatModel;
@@ -331,6 +331,9 @@ public class ManusRunServiceImpl implements ManusRunService {
         }
         HumanInteractionSession interaction = interactions.get(runId);
         ThrowUtils.throwIf(interaction == null, ErrorCode.TASK_ENDED, "任务已结束，请重新发起");
+
+        //调用人机交互会话的answer方法,提交追问
+       //如果返回false,则问题已回答、已过期或不属于当前任务
         if (!interaction.answer(questionId, answer)) {
             throw new BusinessException(ErrorCode.CONFLICT_ERROR, "问题已回答、已过期或不属于当前任务");
         }

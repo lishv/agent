@@ -14,7 +14,7 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.*;
 
 class HumanInteractionSessionTest {
-    private HumanInteractionSession session(String id, BlockingQueue<HumanInteractionSession.HumanQuestion> questions) {
+    private HumanInteractionSession session(String id, BlockingQueue<HumanInteractionSession.askHumanQuestion> questions) {
         HumanInteractionSession session = new HumanInteractionSession(id, Duration.ofSeconds(5));
         session.setPublisher(questions::add);
         return session;
@@ -22,7 +22,7 @@ class HumanInteractionSessionTest {
 
     @Test
     void toolWaitsAndReturnsTheRealAnswer() throws Exception {
-        BlockingQueue<HumanInteractionSession.HumanQuestion> questions = new LinkedBlockingQueue<>();
+        BlockingQueue<HumanInteractionSession.askHumanQuestion> questions = new LinkedBlockingQueue<>();
         HumanInteractionSession session = session("run-a", questions);
         AskHumanTool tool = new AskHumanTool(session::ask);
         CompletableFuture<AskHumanTool.HumanReply> result = CompletableFuture.supplyAsync(() -> tool.askHuman("请提供任务目标"));
@@ -36,8 +36,8 @@ class HumanInteractionSessionTest {
 
     @Test
     void answersCannotCrossDifferentRuns() throws Exception {
-        BlockingQueue<HumanInteractionSession.HumanQuestion> a = new LinkedBlockingQueue<>();
-        BlockingQueue<HumanInteractionSession.HumanQuestion> b = new LinkedBlockingQueue<>();
+        BlockingQueue<HumanInteractionSession.askHumanQuestion> a = new LinkedBlockingQueue<>();
+        BlockingQueue<HumanInteractionSession.askHumanQuestion> b = new LinkedBlockingQueue<>();
         var first = session("run-a", a);
         var second = session("run-b", b);
         var resultA = CompletableFuture.supplyAsync(() -> first.ask("你的目标？"));
@@ -55,7 +55,7 @@ class HumanInteractionSessionTest {
 
     @Test
     void eachQuestionHasANewIdAndRejectsStaleOrDuplicateAnswers() throws Exception {
-        BlockingQueue<HumanInteractionSession.HumanQuestion> questions = new LinkedBlockingQueue<>();
+        BlockingQueue<HumanInteractionSession.askHumanQuestion> questions = new LinkedBlockingQueue<>();
         var session = session("run-a", questions);
         var first = CompletableFuture.supplyAsync(() -> session.ask("地点？"));
         var old = questions.poll(2, TimeUnit.SECONDS);
@@ -74,7 +74,7 @@ class HumanInteractionSessionTest {
 
     @Test
     void closeReleasesTheWaitingToolAndRejectsLaterAnswers() throws Exception {
-        BlockingQueue<HumanInteractionSession.HumanQuestion> questions = new LinkedBlockingQueue<>();
+        BlockingQueue<HumanInteractionSession.askHumanQuestion> questions = new LinkedBlockingQueue<>();
         var session = session("run-a", questions);
         var result = CompletableFuture.supplyAsync(() -> session.ask("你的目标？"));
         var question = questions.poll(2, TimeUnit.SECONDS);
@@ -94,7 +94,7 @@ class HumanInteractionSessionTest {
 
     @Test
     void rejectsBlankInputAndClearsPendingQuestionWhenPublishingFails() throws Exception {
-        BlockingQueue<HumanInteractionSession.HumanQuestion> questions = new LinkedBlockingQueue<>();
+        BlockingQueue<HumanInteractionSession.askHumanQuestion> questions = new LinkedBlockingQueue<>();
         var session = session("run-a", questions);
         assertThrows(BusinessException.class, () -> session.ask(" "));
         assertThrows(BusinessException.class, () -> session.answer("id", " "));

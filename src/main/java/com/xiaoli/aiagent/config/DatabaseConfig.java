@@ -30,7 +30,8 @@ public class DatabaseConfig {
     @ConditionalOnProperty(name = "app.vector-store.enabled", havingValue = "true")
     public DataSourceProperties vectorDataSourceProperties() { return new DataSourceProperties(); }
 
-    @Bean
+    /** 创建独立的向量库连接池，并绑定保活和连接校验等池参数。 */
+    @Bean @ConfigurationProperties("app.vector-datasource.hikari")
     @ConditionalOnProperty(name = "app.vector-store.enabled", havingValue = "true")
     public DataSource vectorDataSource(@Qualifier("vectorDataSourceProperties") DataSourceProperties properties) {
         return properties.initializeDataSourceBuilder().build();

@@ -31,6 +31,7 @@ build/
 !**/src/test/**/build/
 
 application-local.yml
+application-prod.yml
 ### VS Code ###
 .vscode/
 

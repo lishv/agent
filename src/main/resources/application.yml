@@ -2,8 +2,16 @@ spring:
   application:
     name: ai-agent
   profiles:
-    active: local
+    active: prod
   ai:
+    model:
+      # 仅选择嵌入模型；聊天模型仍读取 local/prod 中的配置。
+      embedding: dashscope
+    dashscope:
+      embedding:
+        options:
+          model: text-embedding-v4
+          dimensions: 1024
     vectorstore:
       pgvector:
         index-type: HNSW
@@ -26,33 +34,26 @@ spring:
         # 旧 mcp-servers.json 是 stdio 方式的备用配置，当前不加载，避免重复启动图片服务。
     #大模型失败调用重试配置
     retry:
-      # 首次调用 + 最多重试 4 次
+      # 最多调用 4 次（包含首次调用）
       max-attempts: 4
       backoff:
         initial-interval: 1s
         multiplier: 2
         max-interval: 5s
       on-client-errors: false
-  datasource:
-    driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://localhost:3306/ai_agent?useSSL=false&serverTimezone=UTC
-    username: root
-    password: ${MYSQL_PASSWORD:}
   session:
     store-type: redis
     timeout: 30d
     redis:
       namespace: huiling:session
       flush-mode: on_save
-  data:
-    redis:
-      database: 2
-      host: localhost
-      port: 6379
-      password: ${REDIS_PASSWORD:}
-      timeout: 300s
 
 app:
+  vector-datasource:
+    hikari:
+      # 单位为毫秒；定期校验空闲连接，避免长时间模型调用后再集中发现失效连接。
+      keepalive-time: 60000
+      validation-timeout: 3000
   storage:
     # 默认相对于应用启动目录，服务器可通过环境变量覆盖。
     base-dir: ${APP_STORAGE_BASE_DIR:./tmp}

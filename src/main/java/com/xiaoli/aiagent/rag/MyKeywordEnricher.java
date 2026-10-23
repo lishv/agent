@@ -8,19 +8,15 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 
-/**
- * 基于 AI 的文档元信息增强器（自动为文档补充元信息）
- */
+/** 使用 DashScope 聊天模型为知识库文档补充关键词。 */
 @Component
 public class MyKeywordEnricher {
 
-//    @Resource
-//    private ChatModel dashScopeChatModel;
     @Resource
-    private  ChatModel ollamaChatModel;
+    private ChatModel dashScopeChatModel;
 
+    /** 为每个文档提取 5 个关键词，保留原有文本及检索元数据。 */
     public List<Document> enrichDocuments(List<Document> documents) {
-        KeywordMetadataEnricher keywordMetadataEnricher = new KeywordMetadataEnricher(ollamaChatModel, 5);
-        return  keywordMetadataEnricher.apply(documents);
+        return new KeywordMetadataEnricher(dashScopeChatModel, 5).apply(documents);
     }
 }

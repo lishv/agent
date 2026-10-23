@@ -127,8 +127,11 @@ class WebSearchScrapingToolTest {
 
     @Test
     void registersSearchAsAnAiTool() {
-        assertTrue(java.util.Arrays.stream(new ToolRegistration().allTools())
+        var registered = new ToolRegistration().allTools();
+        assertTrue(java.util.Arrays.stream(registered)
                 .anyMatch(callback -> "searchWebScraping".equals(callback.getToolDefinition().name())));
+        assertFalse(java.util.Arrays.stream(registered)
+                .anyMatch(callback -> "searchWeb".equals(callback.getToolDefinition().name())));
         assertEquals("searchWebScraping", ToolCallbacks.from(tool)[0].getToolDefinition().name());
     }
 

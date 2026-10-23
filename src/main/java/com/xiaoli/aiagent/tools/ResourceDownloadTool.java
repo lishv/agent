@@ -1,76 +1,93 @@
 package com.xiaoli.aiagent.tools;
 
-import cn.hutool.core.io.FileUtil;
+import cn.hutool.core.io.IoUtil;
+import cn.hutool.http.HttpResponse;
 import cn.hutool.http.HttpUtil;
-
 import com.xiaoli.aiagent.constant.FileConstant;
 import com.xiaoli.aiagent.service.GeneratedFileService;
-import com.xiaoli.aiagent.util.FilePathUtils;
-
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 
-/** 给定URL下载的资源下载工具 */
+/** 流式下载 HTTP(S) 资源，限制网络等待和落盘大小，完整下载后才发布。 */
 public class ResourceDownloadTool {
-    private final Path downloadDirectory;
-    private final GeneratedFileService generatedFiles;
+    private final ToolFileStorage storage;
 
-    /** 独立使用时下载到应用启动目录的 tmp/download。 */
+    /** 独立使用时下载到相对目录 tmp/download。 */
     public ResourceDownloadTool() {
         this(FileConstant.FILE_SAVE_DIR);
     }
 
-    /** 根据部署配置选择存储根目录，下载文件归于 download 子目录。 */
+    /** 指定独立下载的存储根目录。 */
     public ResourceDownloadTool(String directory) {
         this(directory, null);
     }
 
-    /** 应用内下载使用任务隔离目录和统一文件有效期。 */
+    /** 应用内复用任务隔离、完整写入、文件有效期与下载链接。 */
     public ResourceDownloadTool(String directory, GeneratedFileService generatedFiles) {
-        downloadDirectory = FilePathUtils.toolDirectory(directory, "download");
-        this.generatedFiles = generatedFiles;
+        storage = new ToolFileStorage(directory, "download", generatedFiles);
     }
 
-    /** 下载完整资源后返回本地路径及真实 HTTP 下载链接，供图片复用和用户下载。 */
-    @Tool(
-            description =
-                    "Download a resource from a URL. Return its local path and the exact Markdown"
-                        + " download link. Reuse that link unchanged in the final answer; never"
-                        + " invent sandbox: URLs.")
+    /** 校验参数后按大小上限流式下载；超限、HTTP 错误或读取失败不发布半成品。 */
+    @Tool(description = "Download an HTTP(S) resource to a file in the current task. "
+            + "Streams to disk without loading the entire file into memory. "
+            + "timeoutSeconds controls network connect/read timeout (default 30, maximum 120). "
+            + "maxSizeMb limits actual received bytes in MiB (default 50, maximum 100). "
+            + "Returns the local path and exact Markdown download link. Reuse that link unchanged; never invent sandbox: URLs.")
     public String downloadResource(
-            @ToolParam(description = "URL of the resource to download") String url,
-            @ToolParam(description = "Name of the file to save the downloaded resource")
-                    String fileName,
+            @ToolParam(description = "HTTP(S) URL of the resource") String url,
+            @ToolParam(description = "Relative filename to save") String fileName,
+            @ToolParam(description = "Network timeout in seconds, 1-120", required = false) Integer timeoutSeconds,
+            @ToolParam(description = "Maximum file size in MiB, 1-100", required = false) Integer maxSizeMb,
             ToolContext context) {
         try {
-            Path filePath;
-            if (generatedFiles == null) {
-                filePath = FilePathUtils.resolveFile(downloadDirectory, fileName);
-                FileUtil.mkdir(filePath.getParent().toFile());
-                HttpUtil.downloadFile(url, filePath.toFile());
-            } else {
-                filePath =
-                        generatedFiles.write(
-                                "download",
-                                fileName,
-                                context,
-                                path -> HttpUtil.downloadFile(url, path.toFile()));
+            String address = WebMediaExtractor.safeUrl("", url);
+            if (address.isEmpty()) throw new IllegalArgumentException("请提供有效的 HTTP 或 HTTPS 地址");
+            int timeout = timeoutSeconds == null ? 30 : timeoutSeconds;
+            int maxSize = maxSizeMb == null ? 50 : maxSizeMb;
+            if (timeout < 1 || timeout > 120 || maxSize < 1 || maxSize > 100) {
+                throw new IllegalArgumentException("timeoutSeconds 必须为 1–120，maxSizeMb 必须为 1–100");
             }
-            return "Resource downloaded successfully to: "
-                    + filePath
-                    + (generatedFiles == null
-                            ? ""
-                            : "\n" + generatedFiles.downloadLink("download", filePath, context));
+            Path file = storage.write(fileName, context,
+                    path -> download(address, path, timeout * 1000, maxSize * 1024L * 1024));
+            return "Resource downloaded successfully to: " + storage.describe(file, context);
         } catch (Exception e) {
             return "Error downloading resource: " + e.getMessage();
         }
     }
 
+    /** 保留由应用直接传入任务上下文的调用方式。 */
+    public String downloadResource(String url, String fileName, ToolContext context) {
+        return downloadResource(url, fileName, null, null, context);
+    }
+
     /** 保留独立调用下载工具的原有方法签名。 */
     public String downloadResource(String url, String fileName) {
         return downloadResource(url, fileName, null);
+    }
+
+    /** 同时检查响应声明和实际接收大小，缺少 Content-Length 时也不能无限下载。 */
+    private void download(String url, Path file, int timeoutMillis, long maxBytes) throws IOException {
+        try (HttpResponse response = HttpUtil.createGet(url)
+                .header("User-Agent", "Mozilla/5.0 (compatible; Huiling-Agent/1.0)")
+                .setFollowRedirects(true)
+                .timeout(timeoutMillis)
+                .executeAsync()) {
+            if (!response.isOk()) throw new IOException("HTTP " + response.getStatus());
+            if (response.contentLength() > maxBytes) throw new IOException("资源大小超过下载上限");
+            try (var input = response.bodyStream(); var output = Files.newOutputStream(file)) {
+                if (input == null) throw new IOException("响应没有可下载的内容");
+                long size = IoUtil.copy(input, output, IoUtil.DEFAULT_BUFFER_SIZE, maxBytes + 1, null);
+                if (size > maxBytes) throw new IOException("资源大小超过下载上限");
+                if (response.header("Content-Encoding") == null
+                        && response.contentLength() >= 0 && size != response.contentLength()) {
+                    throw new IOException("下载未完成，实际文件大小与响应声明不一致");
+                }
+            }
+        }
     }
 }

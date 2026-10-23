@@ -22,6 +22,7 @@ import org.springframework.ai.model.tool.ToolExecutionResult;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.execution.DefaultToolExecutionExceptionProcessor;
+import org.springframework.ai.tool.function.FunctionToolCallback;
 
 import java.util.List;
 import java.util.ArrayList;
@@ -67,6 +68,13 @@ public class ToolCallAgent extends ReActAgent {
         var defaultExceptionProcessor = new DefaultToolExecutionExceptionProcessor(false);
         //自定义异常处理器：askHuman 和普通工具用不同策略
         this.toolCallingManager = ToolCallingManager.builder()
+                // 工具名未注册时返回说明，保留工具调用 ID，让模型有机会重新选择。
+                .toolCallbackResolver(name -> FunctionToolCallback.builder(name,
+                                (Object ignored) -> "未找到工具：" + name + "。请从当前可用工具中重新选择，不要声称该工具已执行。")
+                        .description("返回未注册工具的说明，不执行任何操作")
+                        .inputType(Object.class)
+                        .inputSchema("{}")
+                        .build())
                 // 特殊处理：askHuman 是人机交互工具，如果它失败（用户取消/超时），
                 // 必须直接抛异常终止整个任务，不能让 LLM 继续瞎跑
                 .toolExecutionExceptionProcessor(error -> {
@@ -153,6 +161,10 @@ public class ToolCallAgent extends ReActAgent {
                     .call()
                     .chatResponse();
 
+            // 空响应明确报错；仅含工具调用、没有正文的正常响应仍允许继续。
+            if (chatResponse == null || chatResponse.getResult() == null || chatResponse.getResult().getOutput() == null) {
+                throw new BusinessException(ErrorCode.OPERATION_ERROR, "模型返回空结果，请稍后重试");
+            }
 
             // 记录本次大模型调用的响应，用于后续 Act 方法中解析
             this.currentModelResponse = chatResponse;
@@ -245,7 +257,9 @@ public class ToolCallAgent extends ReActAgent {
         ToolResponseMessage toolResponseMessage = (ToolResponseMessage) CollUtil.getLast(toolExecutionResult.conversationHistory());
         // 判断是否调用了终止工具,判断是否调用了doTerminate工具
         boolean terminateToolCalled = toolResponseMessage.getResponses().stream()
-                .anyMatch(response -> response.name().equals("doTerminate"));
+                .anyMatch(response -> response.name().equals("doTerminate"))
+                && java.util.Arrays.stream(availableTools)
+                        .anyMatch(tool -> tool.getToolDefinition().name().equals("doTerminate"));
         //这里没有使用conversationHistory,因为answer 在 doTerminate 场景下根本不会被返回给前端,此外但执行工具本身不会请求模型,因此这里只需返回上一轮think的结果
         String answer = currentModelResponse.getResult().getOutput().getText();
 
@@ -258,7 +272,8 @@ public class ToolCallAgent extends ReActAgent {
         }
         // 合并所有工具调用的结果
         String results = toolResponseMessage.getResponses().stream()
-                .filter(response -> !response.name().equals("doTerminate"))// 过滤掉终止工具的结果
+                // 只隐藏真实终止工具的结束标记；未注册时的错误说明仍应返回。
+                .filter(response -> !terminateToolCalled || !response.name().equals("doTerminate"))
                 .map(response -> "工具 " + response.name() + " 返回的结果：" + response.responseData())
                 .collect(Collectors.joining("\n"));
         log.info(results);

@@ -9,18 +9,25 @@ import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 
 import java.util.HashSet;
-import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.function.LongSupplier;
+import java.util.stream.Collectors;
 
 /** 为图片 MCP 增加备用检索和数量限制，标注实际分辨率，保留可用预览图。 */
 public class ImageSearchTool {
+    private static final int DEFAULT_COUNT = 3;
+    private static final int MAX_COUNT = 10;
+    private static final int MAX_DIMENSION = 16384;
+    private static final int MAX_CANDIDATES = 24;
+    private static final int METADATA_TIMEOUT_MILLIS = 5000;
+    private static final int VERIFICATION_BUDGET_MILLIS = 15000;
+    private static final int REMOTE_RETRY_DELAY_MILLIS = 60000;
     private static final BingImageSearchClient SHARED_FALLBACK = new BingImageSearchClient();
     private final ToolCallback remote;
     private final BingImageSearchClient fallback;
     private final ImageMetadataReader metadata;
     private final LongSupplier clock;
-    private long remoteRetryAt;
+    private volatile long remoteRetryAt;
 
     /** 保留已连接的图片 MCP，所有任务共用有容量与有效期限制的备用图库缓存。 */
     public ImageSearchTool(ToolCallback remote) {
@@ -77,19 +84,10 @@ public class ImageSearchTool {
                                     "Preferred original height; use 2160 for landscape 4K. Smaller"
                                         + " previews remain included")
                     Integer minHeight) {
-        int requested = count == null ? 3 : count;
+        int requested = count == null ? DEFAULT_COUNT : count;
         int width = minWidth == null ? 0 : minWidth;
         int height = minHeight == null ? 0 : minHeight;
-        if (query == null
-                || query.isBlank()
-                || query.codePointCount(0, query.length()) > 100
-                || query.matches("(?is).*https?://.*|.*(?:site|filetype|inurl):.*")
-                || requested < 1
-                || requested > 10
-                || width < 0
-                || height < 0
-                || width > 16384
-                || height > 16384)
+        if (!validRequest(query, requested, width, height))
             return JSONUtil.createObj()
                     .set("status", "invalid_query")
                     .set("message", "请输入简短图片主题，数量为 1–10 张，像素下限为 0–16384。")
@@ -101,66 +99,74 @@ public class ImageSearchTool {
         }
         JSONArray found = JSONUtil.createArray();
         Set<String> seen = new HashSet<>();
-        Set<String> sources = new LinkedHashSet<>();
         long deadline = 0;
-        boolean fallbackUsed = false, providerFailed = false;
+        boolean fallbackUsed = false;
+        boolean providerFailed = false;
         // 高分辨率需求先检索可能的原图，但后续同样保留能够访问的预览图。
         if (width <= 1280 && height <= 1280 && clock.getAsLong() >= remoteRetryAt) {
             try {
-                String arguments = JSONUtil.createObj().set("query", keywords).toString();
-                // 图片检索只传关键词，不把文件工具的用户和任务身份发送给外部图库。
-                String response = remote.call(arguments);
-                var data = unwrap(response);
-                if (!"ok".equals(data.getStr("status"))
-                        && !"no_results".equals(data.getStr("status")))
-                    throw new IllegalStateException("图片 MCP 不可用");
-                deadline = clock.getAsLong() + 15000;
-                collect(
-                        data.getJSONArray("images"),
-                        "Pixabay",
-                        found,
-                        seen,
-                        sources,
-                        requested,
-                        width,
-                        height,
-                        deadline);
+                JSONArray candidates = searchRemote(keywords);
+                deadline = clock.getAsLong() + VERIFICATION_BUDGET_MILLIS;
+                collect(candidates, "Pixabay", found, seen, requested, width, height, deadline);
             } catch (RuntimeException error) {
                 providerFailed = true;
                 // 同一次任务内停止反复撞到相同 MCP 超时，之后仍允许自动恢复。
-                remoteRetryAt = clock.getAsLong() + 60000;
+                remoteRetryAt = clock.getAsLong() + REMOTE_RETRY_DELAY_MILLIS;
             }
         }
         if (found.size() < requested) {
             fallbackUsed = true;
             try {
                 JSONArray candidates = fallback.search(fallbackKeywords(keywords), width, height);
-                if (deadline == 0) deadline = clock.getAsLong() + 15000;
-                collect(
-                        candidates,
-                        "Bing Images",
-                        found,
-                        seen,
-                        sources,
-                        requested,
-                        width,
-                        height,
-                        deadline);
+                if (deadline == 0) deadline = clock.getAsLong() + VERIFICATION_BUDGET_MILLIS;
+                collect(candidates, "Bing Images", found, seen, requested, width, height, deadline);
             } catch (RuntimeException error) {
                 providerFailed = true;
             }
         }
+        return searchResult(keywords, requested, width, height, found, fallbackUsed, providerFailed);
+    }
+
+    /** 校验主题、数量和像素偏好，非法请求不调用外部图库。 */
+    private boolean validRequest(String query, int count, int width, int height) {
+        return query != null && !query.isBlank()
+                && query.codePointCount(0, query.length()) <= 100
+                && !query.matches("(?is).*https?://.*|.*(?:site|filetype|inurl):.*")
+                && count >= 1 && count <= MAX_COUNT
+                && width >= 0 && width <= MAX_DIMENSION
+                && height >= 0 && height <= MAX_DIMENSION;
+    }
+
+    /** 远端图库仅接收关键词；不传递文件工具使用的用户身份和任务上下文。 */
+    private JSONArray searchRemote(String keywords) {
+        String arguments = JSONUtil.createObj().set("query", keywords).toString();
+        JSONObject data = unwrap(remote.call(arguments));
+        String status = data.getStr("status");
+        if (!"ok".equals(status) && !"no_results".equals(status))
+            throw new IllegalStateException("图片 MCP 不可用");
+        return data.getJSONArray("images");
+    }
+
+    /** 从已验证图片生成统计，来源去重保持检索顺序，不额外维护重复状态。 */
+    private String searchResult(String keywords, int requested, int width, int height,
+                                JSONArray found, boolean fallbackUsed, boolean providerFailed) {
         boolean complete = found.size() == requested;
         boolean allMeetResolution =
                 !found.isEmpty()
                         && found.stream()
                                 .map(JSONUtil::parseObj)
-                                .allMatch(
-                                        image -> image.getBool("meetsRequestedResolution", false));
+                                .allMatch(image -> image.getBool("meetsRequestedResolution", false));
         String status = !found.isEmpty() ? "ok" : providerFailed ? "network_error" : "no_results";
+        String sources = found.stream().map(JSONUtil::parseObj).map(image -> image.getStr("source"))
+                .distinct().collect(Collectors.joining(" / "));
+        String message = complete
+                ? "已找到 " + found.size() + " 张不同图片，实际分辨率已标注。"
+                    + (allMeetResolution ? "" : "其中包含预览图，可浏览或下载。")
+                : "仅找到 " + found.size() + "/" + requested
+                    + " 张可用图片，部分图源暂时不可访问或没有匹配结果。";
         return JSONUtil.createObj()
                 .set("status", status)
-                .set("source", String.join(" / ", sources))
+                .set("source", sources)
                 .set("query", keywords)
                 .set("count", found.size())
                 .set("requestedCount", requested)
@@ -170,18 +176,7 @@ public class ImageSearchTool {
                 .set("minWidth", width)
                 .set("minHeight", height)
                 .set("images", found)
-                .set(
-                        "message",
-                        complete
-                                ? "已找到 "
-                                        + found.size()
-                                        + " 张不同图片，实际分辨率已标注。"
-                                        + (allMeetResolution ? "" : "其中包含预览图，可浏览或下载。")
-                                : "仅找到 "
-                                        + found.size()
-                                        + "/"
-                                        + requested
-                                        + " 张可用图片，部分图源暂时不可访问或没有匹配结果。")
+                .set("message", message)
                 .toString();
     }
 
@@ -191,7 +186,6 @@ public class ImageSearchTool {
             String source,
             JSONArray found,
             Set<String> seen,
-            Set<String> sources,
             int count,
             int width,
             int height,
@@ -199,14 +193,18 @@ public class ImageSearchTool {
         if (candidates == null) return;
         int inspected = 0;
         for (Object raw : candidates) {
-            if (found.size() >= count || inspected++ >= 24 || clock.getAsLong() >= deadline) break;
-            var image = JSONUtil.parseObj(raw);
-            String url =
-                    WebMediaExtractor.safeUrl(
-                            "", image.getStr("downloadUrl", image.getStr("url", "")));
+            if (found.size() >= count || inspected++ >= MAX_CANDIDATES || clock.getAsLong() >= deadline) break;
+            JSONObject image;
+            try {
+                image = JSONUtil.parseObj(raw);
+            } catch (RuntimeException ignored) {
+                // 单个损坏条目不应中断其他图片的校验。
+                continue;
+            }
+            String url = WebMediaExtractor.safeUrl("", image.getStr("downloadUrl", image.getStr("url", "")));
             String page = WebMediaExtractor.safeUrl("", image.getStr("pageUrl", ""));
             if (url.isBlank() || page.isBlank() || !seen.add(url)) continue;
-            int timeout = (int) Math.max(1, Math.min(5000, deadline - clock.getAsLong()));
+            int timeout = (int) Math.max(1, Math.min(METADATA_TIMEOUT_MILLIS, deadline - clock.getAsLong()));
             var dimensions = metadata.read(url, timeout);
             if (dimensions == null) continue;
             boolean meetsResolution = dimensions.width() >= width && dimensions.height() >= height;
@@ -223,7 +221,6 @@ public class ImageSearchTool {
                             .set("meetsRequestedResolution", meetsResolution)
                             .set("isPreview", !meetsResolution)
                             .set("resolutionVerified", true));
-            sources.add(source);
         }
     }
 

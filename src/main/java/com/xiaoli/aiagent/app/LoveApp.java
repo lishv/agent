@@ -274,8 +274,6 @@ public class LoveApp {
      */
 
     public Flux<String> doChatByStream(String message, String chatId, Map<String, Object> toolContext) {
-        // 查询重写
-        String rewrittenMessage = queryRewriter.doQueryRewrite(message);
         ToolCallback[] mcpTools = toolCallbackProvider.getToolCallbacks();
         log.debug("恋爱助手可用 MCP 工具：{}", Arrays.stream(mcpTools)
                 .map(tool -> tool.getToolDefinition().name()).toList());

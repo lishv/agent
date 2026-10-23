@@ -13,9 +13,6 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class ToolRegistration {
 
-    @Value("${search-api.api-key}")
-    private String searchApiKey;
-
     @Value("${app.storage.base-dir:./tmp}")
     private String storageDirectory = FileConstant.FILE_SAVE_DIR;
 
@@ -28,27 +25,14 @@ public class ToolRegistration {
     /** 按部署目录与字体配置创建本地工具，再统一转换为模型工具回调。 */
     @Bean
     public ToolCallback[] allTools(GeneratedFileService generatedFiles) {
-        FileOperationTool fileOperationTool =
-                new FileOperationTool(storageDirectory, generatedFiles);
-        WebSearchTool webSearchTool = new WebSearchTool(searchApiKey);
-        WebSearchScrapingTool webSearchScrapingTool = new WebSearchScrapingTool();
-        WebScrapingTool webScrapingTool = new WebScrapingTool();
-        ResourceDownloadTool resourceDownloadTool =
-                new ResourceDownloadTool(storageDirectory, generatedFiles);
-        TerminalOperationTool terminalOperationTool = new TerminalOperationTool();
-        PDFGenerationTool pdfGenerationTool =
-                new PDFGenerationTool(storageDirectory, regularFont, boldFont, generatedFiles);
-        TerminateTool terminateTool = new TerminateTool();
-        // 注册所有工具
         return ToolCallbacks.from(
-                fileOperationTool,
-                // webSearchTool,
-                webSearchScrapingTool,
-                webScrapingTool,
-                resourceDownloadTool,
-                terminalOperationTool,
-                pdfGenerationTool,
-                terminateTool);
+                new FileOperationTool(storageDirectory, generatedFiles),
+                new WebSearchScrapingTool(),
+                new WebScrapingTool(),
+                new ResourceDownloadTool(storageDirectory, generatedFiles),
+                new TerminalOperationTool(),
+                new PDFGenerationTool(storageDirectory, regularFont, boldFont, generatedFiles),
+                new TerminateTool());
     }
 
     /** 独立测试工具注册时不装配 Spring，保持原有本地工具构造方式。 */

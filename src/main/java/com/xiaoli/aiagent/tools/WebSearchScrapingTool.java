@@ -14,6 +14,8 @@ import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * 使用 Hutool 抓取 Bing 搜索结果，无需 SearchAPI 密钥。
@@ -21,8 +23,9 @@ import java.util.Base64;
 public class WebSearchScrapingTool {
 
     private static final String SEARCH_URL = "https://cn.bing.com/search";
-    private static final int RESULT_LIMIT = 10;// 本次搜索最多返回的结果数量
-    private static final int TIMEOUT_MILLIS = 15000;// 15 秒超时
+    private static final int RESULT_LIMIT = 10;
+    private static final int TIMEOUT_MILLIS = 15000;
+    private static final int MAX_SNIPPET_LENGTH = 1200;
 
     /**
      * 搜索 Bing，返回最多 10 个结果，每个标题、链接和摘要。
@@ -44,7 +47,8 @@ public class WebSearchScrapingTool {
             if (!response.isOk()) {
                 return "Error searching Bing: HTTP " + response.getStatus();
             }
-            return parseSearchResults(response.body());
+            String result = parseSearchResults(response.body());
+            return "[]".equals(result) ? "未找到匹配的搜索结果，请调整关键词后重试。" : result;
         } catch (Exception e) {
             return "Error searching Bing: " + e.getMessage();
         }
@@ -57,6 +61,7 @@ public class WebSearchScrapingTool {
     String parseSearchResults(String html) {
         Document document = Jsoup.parse(html, SEARCH_URL);
         JSONArray results = JSONUtil.createArray();
+        Set<String> seen = new HashSet<>();
         // 仅提取普通搜索结果，跳过广告、相关搜索和页面导航。
         for (Element item : document.select("#b_results > li.b_algo")) {
             Element anchor = item.selectFirst("h2 a[href]");
@@ -64,17 +69,19 @@ public class WebSearchScrapingTool {
                 continue;
             }
             String link = resolveLink(anchor.absUrl("href"));
-            if (!link.startsWith("https://") && !link.startsWith("http://")) {
+            if (WebMediaExtractor.safeUrl("", link).isEmpty() || link.length() > 2048 || !seen.add(link)) {
                 continue;
             }
             Element snippet = item.selectFirst(".b_caption p");
             if (snippet == null) {
                 snippet = item.selectFirst("p");
             }
+            String title = anchor.text();
+            String summary = snippet == null ? "" : snippet.text();
             results.add(JSONUtil.createObj()
-                    .set("title", anchor.text())
+                    .set("title", title.substring(0, Math.min(title.length(), 256)))
                     .set("link", link)
-                    .set("snippet", snippet == null ? "" : snippet.text()));
+                    .set("snippet", summary.substring(0, Math.min(summary.length(), MAX_SNIPPET_LENGTH))));
             // count 是请求提示，实际返回数量仍需在本地限制。
             if (results.size() == RESULT_LIMIT) {
                 break;

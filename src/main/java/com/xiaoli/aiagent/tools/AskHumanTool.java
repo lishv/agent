@@ -15,11 +15,12 @@ import java.util.function.Function;
 public class AskHumanTool {
 
     private final Function<String, String> answerProvider;
-    //回调函数，interaction::ask
+    /** 绑定本次任务的回答通道（例如 interaction::ask），避免不同任务共用等待状态。 */
     public AskHumanTool(Function<String, String> answerProvider) {
         this.answerProvider = Objects.requireNonNull(answerProvider);
     }
 
+    /** 向真实用户提问并等待回答；缺少有效回答时不编造内容继续执行。 */
     @Tool(
             description = """
                     Ask the user for missing information, preferences or feedback

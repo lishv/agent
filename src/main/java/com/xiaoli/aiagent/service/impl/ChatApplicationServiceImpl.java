@@ -32,6 +32,13 @@ public class ChatApplicationServiceImpl implements ChatApplicationService {
     private final Sinks.Empty<Void> shutdown = Sinks.empty();// 用于通知所有会话关闭
 
     /** 准备本轮记录并在服务端订阅模型输出；浏览器断开不取消任务，显式取消或停机时收尾。 */
+    /**
+     * 恋爱会话
+     * @param userId 用户 ID
+     * @param message 消息
+     * @param chatId 聊天 ID
+     * @return
+     */
     @Override
     public Flux<String> loveStream(Long userId, String message, String chatId) {
         var journal = conversationService.createOrRestoreJournal(userId, "love", chatId, message);//用于创建或恢复会话,登记本轮记录器并写入用户消息；同一会话不能重复启动。此外message为用户输入的消息

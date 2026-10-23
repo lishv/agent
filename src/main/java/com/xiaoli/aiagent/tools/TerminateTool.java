@@ -7,6 +7,7 @@ import org.springframework.ai.tool.annotation.Tool;
  */
 public class TerminateTool {
 
+    /** 返回任务结束标记，智能体根据工具调用结束循环；最终答复仍由模型提供。 */
     @Tool(description = """
             End tool execution when the request is met or the assistant cannot proceed further.
             Include the actual final answer to the user in your response text when calling this tool.

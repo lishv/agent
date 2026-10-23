@@ -163,7 +163,7 @@ public final class FileConversationJournal implements Journal {
         ObjectNode jsonNodes = createMessage("user", content, "done");//createMessage会创建一个json->item然后内置messages.add(item);   // ← 关键：加入 messages 列表
         jsonNodes.put("humanAnswer", answer);
         //这里的true和false是给前端看的,值存入json文件的humanAnswer字段中。对message不会有任何影响,因为message只存在createMessage操作
-        save(true);//    保存用户消息到文件,并立即刷新缓存。
+        saveMessagesJson(true);//    保存用户消息到文件,并立即刷新缓存。
     }
 
     /** 将文本片段累加到本轮正式回答，最多每 200 毫秒保存一次中间结果。 */
@@ -173,7 +173,7 @@ public final class FileConversationJournal implements Journal {
         if (loveReply == null)
             loveReply = createMessage("assistant", "", "streaming").put("kind", "final");
         loveReply.put("content", loveReply.path("content").asText() + chunk);
-        save(false);
+        saveMessagesJson(false);//    保存正式回答到文件,并立即刷新缓存。
     }
 
     /** 追加带步骤编号的进度消息并立即保存，与最终答案区分展示。 */
@@ -181,7 +181,7 @@ public final class FileConversationJournal implements Journal {
     public synchronized void step(int number, String content) {
         if (closed) return;
         createMessage("assistant", content, "done").put("stepNumber", number).put("kind", "progress");//progress  进度消息，与最终答案消息区分展示。
-        save(true);
+        saveMessagesJson(true);
     }
 
     /** 追加独立的最终答案消息并立即保存；关闭后的回调不再写入。 */
@@ -189,7 +189,7 @@ public final class FileConversationJournal implements Journal {
     public synchronized void finalAnswer(String content) {
         if (closed) return;
         createMessage("assistant", content, "done").put("kind", "final");//  final 最终答案消息，与进度消息区分展示。
-        save(true);
+        saveMessagesJson(true);
     }
 
     /** 追加待回答的追问消息并立即保存，便于浏览器重新打开会话时恢复。 */
@@ -237,7 +237,7 @@ public final class FileConversationJournal implements Journal {
         questionNode.put("answer", "");//answer字段,待用户填写
         questionNode.put("expired", false);//expired字段,用于标记问题是否过期
         createMessage("assistant", "", "waiting").withArray("questions").add(questionNode);//.withArray("questions")：给这条消息加一个 "questions" 数组字段（如果没有就创建，有就返回）中
-        save(true);//强制保存,更新会话时间,并调用onSave.accept(row)方法,移除active中的该会话,并更新会话时间
+        saveMessagesJson(true);//强制保存,更新会话时间,并调用onSave.accept(row)方法,移除active中的该会话,并更新会话时间
     }
 
     /** 按问题 ID 回填答案、结束等待状态，并追加一条用户回答；未匹配时忽略。 */
@@ -262,7 +262,7 @@ public final class FileConversationJournal implements Journal {
         failed = true;
         if (loveReply != null) loveReply.put("status", "error");
         else createMessage("assistant", "", "error");
-        save(true);
+        saveMessagesJson(true);
     }
 
     /** 标记正常完成并更新流式回答状态；最终保存交给 finish 处理。 */
@@ -290,7 +290,7 @@ public final class FileConversationJournal implements Journal {
         if (!completed && !failed && !pending)
             createMessage("assistant", "", "stopped");
         try {
-            save(true);
+            saveMessagesJson(true);
         } finally {
             closed = true;
             onClose.accept(this);
@@ -312,8 +312,8 @@ public final class FileConversationJournal implements Journal {
                 });
     }
 
-    /** 按间隔或强制保存页面记录；强制保存同时更新会话时间，写入失败转换为业务异常。 */
-    private void save(boolean force) {
+    /** save 方法主要保存页面消息 JSON 文件；当 force=true 时，额外刷新一下数据库里该会话的 updated_at 时间戳。它不管模型记忆，也不改会话的其他元数据。 */
+    private void saveMessagesJson(boolean force) {
         if (!force && System.nanoTime() - lastSave < 200_000_000L) return;
 
         Path target = conversationTranscriptStore.path(row);//根据row获取对应的文件路径

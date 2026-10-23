@@ -40,7 +40,7 @@ public class PgVectorVectorStoreConfig {
     @Bean
     public VectorStore pgVectorVectorStore(@Qualifier("vectorJdbcTemplate") JdbcTemplate jdbcTemplate, @Qualifier("dashscopeEmbeddingModel") EmbeddingModel dashscopeEmbeddingModel) {
         return PgVectorStore.builder(jdbcTemplate, dashscopeEmbeddingModel)
-                .dimensions(1024)                    // 与 DashScope 嵌入模型配置的输出维度一致
+                .dimensions(1024)// 与 DashScope 嵌入模型配置的输出维度一致
                 .distanceType(COSINE_DISTANCE)       // 距离度量方式：余弦距离，值越小越相似（默认就是这个）
                 .indexType(HNSW)                     // 向量索引类型：HNSW 近似最近邻搜索，速度快（默认就是这个）
                 .initializeSchema(true)              // 是否自动建表：启动时自动在数据库创建向量表和索引

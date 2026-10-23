@@ -14,6 +14,7 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
+import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
@@ -283,6 +284,10 @@ public class LoveApp {
                 .user(message)
                 .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, chatId))
                 .advisors(QuestionAnswerAdvisor.builder(pgVectorVectorStore)
+                        .searchRequest(SearchRequest.builder()
+                                .similarityThreshold(0.6)
+                                .topK(3)
+                                .build())
                         .promptTemplate(new PromptTemplate(LoveAppPrompts.RAG_CONTEXT))
                         .build())// 情感知识作为参考，同时允许地图等工具提供实时事实
                 .toolCallbacks(tools)// 包含所有工具+mcp工具

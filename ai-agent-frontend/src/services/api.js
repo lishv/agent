@@ -3,6 +3,7 @@ import { createSseParser } from './sse.js'
 import { generatedFileRequest, downloadFilename } from './fileDownloads.js'
 import { MAX_MESSAGE_LENGTH } from '../constants/chat.js'
 
+// Vite 按 development / production 读取各自的 API 地址；所有请求共用此实例。
 export const http = axios.create({ baseURL: import.meta.env?.VITE_API_BASE_URL || '/api', withCredentials: true })
 let csrfToken = ''
 let accountId = ''
@@ -156,6 +157,6 @@ export function errorMessage(error) {
     if (status === 429) return '请求有些频繁，请稍后再试。'
     return `服务暂时无法处理请求（${status}），请稍后再试。`
   }
-  if (axios.isAxiosError(error)) return '连接失败，请确认后端服务已在 8124 端口启动。'
+  if (axios.isAxiosError(error)) return '连接失败，请确认服务地址和网络正常。'
   return '回答未完成，请稍后再试。'
 }

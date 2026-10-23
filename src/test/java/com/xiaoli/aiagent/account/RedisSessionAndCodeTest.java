@@ -40,7 +40,7 @@ class RedisSessionAndCodeTest {
             var mime=new MimeMessage(Session.getInstance(new Properties())); when(mail.createMimeMessage()).thenReturn(mime);
             var codes=new EmailCodeManager(strings,mail); ReflectionTestUtils.setField(codes,"fromEmail","sender@example.test");
             codes.send(email,"register",ip);
-            String html=(String)mime.getContent(); var match=Pattern.compile(">([0-9]{6})</p>").matcher(html); assertTrue(match.find()); String code=match.group(1);
+            String html=MailTestMessages.html(mime); var match=Pattern.compile(">([0-9]{6})</p>").matcher(html); assertTrue(match.find()); String code=match.group(1);
             assertThrows(BusinessException.class,()->codes.send(email,"register",ip));
             var outcomes=new CopyOnWriteArrayList<Boolean>();
             try (var executor=Executors.newVirtualThreadPerTaskExecutor()) {
@@ -51,13 +51,13 @@ class RedisSessionAndCodeTest {
             assertEquals(1,outcomes.stream().filter(Boolean::booleanValue).count());
             assertThrows(BusinessException.class,()->codes.consume(email,"register",code));
             codes.send(email,"reset_password",ip);
-            html=(String)mime.getContent(); match=Pattern.compile(">([0-9]{6})</p>").matcher(html); assertTrue(match.find()); String resetCode=match.group(1);
+            html=MailTestMessages.html(mime); match=Pattern.compile(">([0-9]{6})</p>").matcher(html); assertTrue(match.find()); String resetCode=match.group(1);
             String wrong=String.format("%06d",(Integer.parseInt(resetCode)+1)%1_000_000);
             for(int i=0;i<5;i++) assertThrows(BusinessException.class,()->codes.consume(email,"reset_password",wrong));
             assertThrows(BusinessException.class,()->codes.consume(email,"reset_password",resetCode));
             codes.send(email,"login",ip);
             assertEquals("【绘灵 AI】登录验证码",mime.getSubject());
-            html=(String)mime.getContent(); match=Pattern.compile(">([0-9]{6})</p>").matcher(html); assertTrue(match.find()); String loginCode=match.group(1);
+            html=MailTestMessages.html(mime); match=Pattern.compile(">([0-9]{6})</p>").matcher(html); assertTrue(match.find()); String loginCode=match.group(1);
             assertThrows(BusinessException.class,()->codes.consume(email,"register",loginCode));
             assertThrows(BusinessException.class,()->codes.consume(email,"reset_password",loginCode));
             codes.consume(email,"login",loginCode);

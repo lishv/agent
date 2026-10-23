@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1",
+    "dev": "vite ",
     "build": "vite build",
-    "preview": "vite preview --host 127.0.0.1",
+    "preview": "vite preview ",
     "test": "node --test --test-concurrency=1 tests/sse.test.js tests/api.test.js tests/chat.test.js tests/presentation.test.js tests/fileDownloads.test.js tests/imagePreviews.test.js"
   },
   "engines": {

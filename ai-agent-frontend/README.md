@@ -15,6 +15,8 @@ npm run dev
 
 访问 http://127.0.0.1:5173 ，后端应在 http://localhost:8124 启动。开发服务器已将 `/api` 请求代理到后端，因此本地开发不需要修改后端跨域配置。
 
+开发和预览服务均监听 `0.0.0.0`，也可使用运行机器的 IP 访问对应端口。`--host` 只控制这两个服务的监听地址；`npm run build` 直接生成静态文件，构建本身不监听端口。宝塔生产部署使用 Nginx 提供 `dist` 中的静态文件。
+
 ```powershell
 npm test       # SSE 解析及接口行为测试
 npm run build # 生成 dist
@@ -51,7 +53,7 @@ npm run preview # 在 http://127.0.0.1:4173 预览构建结果，也包含本地
 | 超级智能体 | `/api/ai/manus/chat` | POST JSON：`message`, `chatId`, 可选 `runId` |
 | 连接检查 | `/api/health` | GET，无参数 |
 
-两个流式聊天接口使用 POST 正文发送长文本，避免中文查询参数超过请求行长度限制；输入框最多 8000 字符。
+两个流式聊天接口使用 POST 正文发送长文本，避免中文查询参数超过请求行长度限制；输入框最多 20000 字符。
 
 使用 Axios 的 `fetch` adapter 和 `responseType: 'stream'` 消费浏览器 ReadableStream。没有使用 EventSource 自动重连：后端关闭一次 SSE 响应后，前端即结束这一轮，避免重复触发智能体任务。解析器支持 LF/CRLF/CR、跨分片的中文、多行 data、空格、注释心跳以及可选 `[DONE]` / `done` / `complete` 结束标记。只有用户主动点击重试才重新提交。
 
@@ -89,7 +91,16 @@ Manus 执行进展继续使用普通 SSE data；最终答复单独使用 `event:
 
 ## 环境配置与部署
 
-将 `.env.example` 复制为 `.env.local` 可以改变后端目标。
+前端使用 Vite 的环境文件自动区分开发和生产，与后端 Spring 的 `local` / `prod` 独立配置：
+
+| 命令 | 环境文件 | 浏览器接口地址 | 后端转发 |
+| --- | --- | --- | --- |
+| `npm run dev` | `.env.development` | 本地前端站点的 `/api` | Vite 转到 `http://localhost:8124` |
+| `npm run build` | `.env.production` | 部署站点的 `/api` | 宝塔 Nginx 转到服务器 `http://127.0.0.1:8124` |
+
+两种环境都保留后端的 `/api` 前缀。生产浏览器访问当前站点的域名或 IP，不直接连接后端端口。
+
+需要覆盖本机开发地址时，将 `.env.example` 复制为 `.env.development.local`：
 
 ```dotenv
 VITE_API_BASE_URL=/api
@@ -110,7 +121,9 @@ location /api/ {
 }
 ```
 
-如果将 `VITE_API_BASE_URL` 设置为跨域的完整地址，后端需要允许该前端来源。环境变量在构建时注入，修改后需重新启动开发服务器或重新构建。
+生产构建的独立覆盖配置放在 `.env.production.local`；通用的 `.env.local` 会影响两种环境，应避免在其中写入仅供开发使用的地址。环境变量在构建时注入，修改后需重新启动开发服务器或重新构建。
+
+如果将 `VITE_API_BASE_URL` 设置为跨域的完整地址，后端需要允许该前端来源。当前采用宝塔同域代理，无需为此修改后端跨域配置。
 
 ## 目录
 

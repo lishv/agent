@@ -1,12 +1,13 @@
-/** 识别后端返回的本站文件接口；外部链接与其他协议仍使用原有浏览器行为。 */
-export function generatedFileRequest(href) {
-  if (typeof href !== 'string' || !href.startsWith('/') || href.startsWith('//')) return ''
+/** 识别本站附件链接，兼容模型误拼的一层用户目录；文件归属仍由后端登录态校验。 */
+export function generatedFileRequest(href, origin = globalThis.location?.origin || 'https://local.invalid') {
+  if (typeof href !== 'string' || href.startsWith('//') || !(href.startsWith('/') || /^https?:\/\//i.test(href))) return ''
   try {
-    const url = new URL(href, 'https://local.invalid')
-    const match = url.pathname.match(/\/files\/(download|pdf|file)\/[A-Za-z0-9_-]{8,128}$/)
+    const url = new URL(href, origin)
+    if (url.origin !== new URL(origin).origin || url.username || url.password) return ''
+    const match = url.pathname.match(/\/files\/(download|pdf|file)\/(?:[0-9]{1,19}\/)?([A-Za-z0-9_-]{8,128})$/)
     if (!match || url.hash || !url.searchParams.get('name') || [...url.searchParams.keys()].some(key => key !== 'name')) return ''
     // 使用 Axios 配置的 API 根地址，兼容前后端分离部署与自定义 context-path。
-    return match[0] + url.search
+    return `/files/${match[1]}/${match[2]}${url.search}`
   } catch { return '' }
 }
 

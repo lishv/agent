@@ -5,6 +5,7 @@ import com.xiaoli.aiagent.exception.ErrorCode;
 import com.xiaoli.aiagent.exception.ThrowUtils;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.mail.javamail.JavaMailSender;
@@ -24,6 +25,8 @@ public class EmailCodeManager {
     private final StringRedisTemplate redis;
     private final JavaMailSender mail;
     @Value("${spring.mail.username:}") private String fromEmail;
+    private static final ClassPathResource MAIL_TEMPLATE = new ClassPathResource("mail/verification-code.html");
+    private static final ClassPathResource BRAND_LOGO = new ClassPathResource("mail/huiling-logo.png");
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final DefaultRedisScript<Long> LIMIT = new DefaultRedisScript<>("""
         local n = redis.call('INCR', KEYS[1])
@@ -73,7 +76,7 @@ public class EmailCodeManager {
             redis.opsForValue().set(key, digest, Duration.ofMinutes(5));
             redis.delete("huiling:code:attempts:" + suffix);
             var message = mail.createMimeMessage();
-            var helper = new MimeMessageHelper(message, false, "UTF-8");
+            var helper = new MimeMessageHelper(message, MimeMessageHelper.MULTIPART_MODE_RELATED, "UTF-8");
             helper.setFrom(fromEmail, "绘灵 AI"); helper.setTo(email);
             String title = switch (purpose) {
                 case "register" -> "注册验证码";
@@ -81,9 +84,12 @@ public class EmailCodeManager {
                 default -> "找回密码验证码";
             };
             helper.setSubject("【绘灵 AI】" + title);
-            helper.setText("<div style='font-family:Arial;padding:24px;max-width:520px'><h2>绘灵 AI</h2><p>您的" + title
-                    + "为：</p><p style='font-size:30px;letter-spacing:6px'>" + code
-                    + "</p><p>5 分钟内有效。若非本人操作，请忽略此邮件。</p></div>", true);
+            String html = MAIL_TEMPLATE.getContentAsString(StandardCharsets.UTF_8)
+                    .replace("{{title}}", title).replace("{{code}}", code);
+            helper.setText("绘灵 AI\n您的" + title + "为：" + code
+                    + "\n5 分钟内有效。若非本人操作，请忽略此邮件。", html);
+            // Logo 随邮件内嵌，资源从 JAR 读取，不依赖网站地址或服务器本地绝对路径。
+            helper.addInline("huiling-logo", BRAND_LOGO, "image/png");
             mail.send(message);
         } catch (Exception e) {
             redis.execute(ROLLBACK, List.of(cooldown, key), reservation, digest);

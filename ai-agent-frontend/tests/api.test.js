@@ -113,6 +113,27 @@ test('文件下载携带账号身份并通过 API 客户端获取 Blob，过期�
   }
 })
 
+test('最终回复的同站完整链接去除用户目录后，仍携带当前账号身份下载', async () => {
+  const previousAdapter = http.defaults.adapter
+  const previousLocation = globalThis.location
+  http.defaults.adapter = 'fetch'
+  globalThis.location = { origin: 'http://agent.huilingyun.asia' }
+  setAccountId('owner-123')
+  try {
+    const result = await downloadGeneratedFile('http://agent.huilingyun.asia/api/files/pdf/2110254732141473793/mvkzh3tn-5ouslefw8x8-rsn5s7hsimo?name=hangzhou-trip-plan-v2.pdf')
+    assert.equal(await result.blob.text(), '%PDF-test-content')
+    assert.equal(requests.at(-1).pathname, '/api/files/pdf/mvkzh3tn-5ouslefw8x8-rsn5s7hsimo')
+    assert.equal(requests.at(-1).search, '?name=hangzhou-trip-plan-v2.pdf')
+    assert.equal(requestHeaders.at(-1)['x-account-id'], 'owner-123')
+    assert.equal(result.filename, '中文.pdf')
+  } finally {
+    http.defaults.adapter = previousAdapter
+    setAccountId('')
+    if (previousLocation === undefined) delete globalThis.location
+    else globalThis.location = previousLocation
+  }
+})
+
 test('最终答案事件与进展分别处理，完成事件之后不继续输出', async () => {
   const progress = [], final = []
   await run('final-answer', { appId: 'manus', onMessage: text => progress.push(text), onFinalAnswer: text => final.push(text) })

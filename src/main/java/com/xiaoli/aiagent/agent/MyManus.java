@@ -60,6 +60,8 @@ public class MyManus extends ToolCallAgent {
                 When essential information is missing, use askHuman if available and wait for the user's actual answer.
                 Base your response on available information and actual tool results.
                 Never fabricate actions, results, user answers, or links.
+                For generated files, copy the complete Markdown download link returned by the tool verbatim.
+                Local file paths are for tool inputs only. Never build download URLs from them, insert user IDs, or invent sandbox: URLs.
                 Provide a useful final answer addressing the user's request, explaining any limitations or incomplete work.
                 """;
 

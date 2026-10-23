@@ -332,8 +332,6 @@ npm run build
 
 将 `dist` **目录内的内容**部署到站点根目录，使用 Nginx 提供静态文件，并将同域 `/api/` 转发到后端：
 
-以下 `location` 配置放入对应站点的 `server` 块中，已有同名配置时替换对应部分。
-
 ```nginx
 location / {
     try_files $uri $uri/ /index.html;
